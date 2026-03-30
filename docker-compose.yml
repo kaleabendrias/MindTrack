@@ -1,0 +1,128 @@
+name: offline-system
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: offline-mongodb
+    network_mode: host
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: offline_system
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand({ ping: 1 }).ok\" | grep 1 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  mongo-rs-init:
+    image: mongo:7.0
+    container_name: offline-mongo-rs-init
+    network_mode: host
+    restart: "no"
+    command: ["sh", "-lc", "mongosh --host 127.0.0.1:27017 --eval 'try { rs.status() } catch (e) { rs.initiate({_id: \"rs0\", members: [{ _id: 0, host: \"127.0.0.1:27017\" }]}) }' && mongosh --host 127.0.0.1:27017 --eval 'rs.status().ok'"]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  mongo-seed:
+    build:
+      context: ./apps/backend
+    container_name: offline-mongo-seed
+    network_mode: host
+    restart: "no"
+    command: ["node", "src/infrastructure/seed/runSeed.js"]
+    environment:
+      NODE_ENV: production
+      APP_PORT: 4000
+      MONGO_URI: mongodb://127.0.0.1:27017/offline_system?replicaSet=rs0
+      MONGO_DB_NAME: offline_system
+      AUTH_TOKEN_SECRET: 8m3Yb9Q2r7Lp4Vs1Xc6Ke0Na5Ht8Ju3Wd4Rf1Zp6Cx2Q
+      REFRESH_TOKEN_SECRET: 4Tr8Vy1Nq6Ws9Pd3Lk2Jh7Zx5Cb0Mf8Rg1Sn4Tx9Ua6E
+      REQUEST_SIGNING_SECRET: 7Pk4Wm9Lc2Qs8Hv1Nx5Je3Rt6Yb0Df4Ua9Ko2Mz7Xp5S
+      DATA_ENCRYPTION_KEY: C5r8Nv2Qk7Yp4Lm9Ht1Ws6Dx3Jf0Bc5Ze8Ua2Po7Rt4L
+      BACKUP_DIRECTORY: /var/lib/offline-system/backups
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mongo-rs-init:
+        condition: service_completed_successfully
+
+  backend:
+    build:
+      context: ./apps/backend
+    container_name: offline-backend
+    network_mode: host
+    restart: unless-stopped
+    command: ["node", "src/server.js"]
+    environment:
+      NODE_ENV: production
+      APP_PORT: 4000
+      MONGO_URI: mongodb://127.0.0.1:27017/offline_system?replicaSet=rs0
+      MONGO_DB_NAME: offline_system
+      AUTH_TOKEN_SECRET: 8m3Yb9Q2r7Lp4Vs1Xc6Ke0Na5Ht8Ju3Wd4Rf1Zp6Cx2Q
+      REFRESH_TOKEN_SECRET: 4Tr8Vy1Nq6Ws9Pd3Lk2Jh7Zx5Cb0Mf8Rg1Sn4Tx9Ua6E
+      REQUEST_SIGNING_SECRET: 7Pk4Wm9Lc2Qs8Hv1Nx5Je3Rt6Yb0Df4Ua9Ko2Mz7Xp5S
+      DATA_ENCRYPTION_KEY: C5r8Nv2Qk7Yp4Lm9Ht1Ws6Dx3Jf0Bc5Ze8Ua2Po7Rt4L
+    volumes:
+      - backend-data:/var/lib/offline-system
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mongo-rs-init:
+        condition: service_completed_successfully
+      mongo-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./apps/frontend
+    container_name: offline-frontend
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  test-runner:
+    image: node:20-alpine
+    container_name: offline-test-runner
+    network_mode: host
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: ["sh", "-lc", "sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  e2e-runner:
+    image: node:20-alpine
+    container_name: offline-e2e-runner
+    network_mode: host
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: ["sh", "-lc", "sleep infinity"]
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  backend-data:
