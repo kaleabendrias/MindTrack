@@ -138,11 +138,11 @@ export class AuthService {
     });
 
     const sessionId = crypto.randomUUID().replaceAll("-", "");
-    const csrfToken = crypto.randomUUID().replaceAll("-", "");
-    const requestSigningKey = crypto
+    const csrfToken = crypto
       .createHmac("sha256", config.requestSigningSecret)
-      .update(`${user.id}:${sessionId}:${csrfToken}`)
+      .update(`${user.id}:${sessionId}:${crypto.randomUUID()}`)
       .digest("hex");
+    const requestSigningKey = csrfToken;
     const refreshToken = issueRefreshToken({ userId: user.id, sessionId });
     const accessToken = issueAccessToken({
       userId: user.id,
@@ -214,7 +214,6 @@ export class AuthService {
       accessToken,
       refreshToken: nextRefreshToken,
       csrfToken: session.csrfToken,
-      requestSigningKey: session.requestSigningKey,
       expiresInSeconds: config.accessTokenTtlSeconds,
       refreshExpiresInSeconds: config.refreshTokenTtlSeconds
     };
@@ -233,7 +232,6 @@ export class AuthService {
 
     return {
       csrfToken: session.csrfToken,
-      requestSigningKey: session.requestSigningKey,
       user: this.sanitizeUser(user, user.permissions.includes(permissions.piiView))
     };
   }

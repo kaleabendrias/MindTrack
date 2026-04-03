@@ -87,7 +87,7 @@ Default seeded clinician identifier for administrator client assignment:
   - `x-csrf-token`
   - `x-request-nonce`
 - Critical writes additionally require `x-idempotency-key`
-- Per-session HMAC signing keys are derived server-side from secure local signing configuration and are never stored in browser persistence
+- HMAC signing uses the per-session CSRF token as the shared key; the CSRF token itself is derived server-side from the locally configured `REQUEST_SIGNING_SECRET` via `HMAC(REQUEST_SIGNING_SECRET, userId:sessionId:nonce)`, making it cryptographically strong and unforgeable without the server secret; no raw signing secret is ever sent to or stored by the browser
 - Account lockout: 5 failed logins triggers 15-minute lock
 - Session rate limit: 60 requests/minute
 - PII is encrypted at rest and masked by default unless `PII_VIEW` permission exists
@@ -209,11 +209,13 @@ Browser clients do not carry a shared global signing secret.
 Instead, trusted mutating requests are protected by:
 
 - authenticated session cookies
-- server-issued per-session HMAC signing key held in memory only
-- active HMAC request signature headers
-- server-issued CSRF token
-- per-request nonce
-- idempotency key for critical write endpoints
+- HMAC request signatures using the per-session CSRF token (derived server-side from `REQUEST_SIGNING_SECRET`)
+- active HMAC request signature headers (`x-signature`, `x-signature-timestamp`, `x-signature-nonce`)
+- server-verified CSRF token (`x-csrf-token`)
+- per-request nonce (`x-request-nonce`)
+- idempotency key for critical write endpoints (`x-idempotency-key`)
+
+The signing secret (`REQUEST_SIGNING_SECRET`) never leaves the server. The CSRF token used for signing is derived from it, held only in browser memory, and never persisted to local storage.
 
 Critical endpoints include:
 

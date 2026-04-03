@@ -662,8 +662,12 @@ export class MindTrackService {
         : (a, b) => b.relevance - a.relevance || new Date(b.updatedAt) - new Date(a.updatedAt)
     );
 
+    const visibleEntries = actor.role === "client"
+      ? scored.filter((e) => e.entryType !== "counseling_note")
+      : scored;
+
     return {
-      entries: scored.slice(0, 100),
+      entries: visibleEntries.slice(0, 100),
       templates: scoredTemplates.slice(0, 50)
     };
   }

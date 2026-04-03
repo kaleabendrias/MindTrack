@@ -15,7 +15,8 @@ function trustedHeaders(session, path, { method = "GET", body = "", idempotencyK
   const timestamp = Date.now();
   const nonce = crypto.randomUUID();
   const payload = [method.toUpperCase(), path, String(timestamp), nonce, body].join("|");
-  const signature = crypto.createHmac("sha256", session.requestSigningKey).update(payload).digest("hex");
+  const signingKey = session.csrfToken;
+  const signature = crypto.createHmac("sha256", signingKey).update(payload).digest("hex");
 
   const headers = {
     cookie: session.cookie,
@@ -48,8 +49,7 @@ async function login(username, password) {
   return {
     json,
     cookie: cookiesFrom(response),
-    csrfToken: json.data?.csrfToken,
-    requestSigningKey: json.data?.requestSigningKey
+    csrfToken: json.data?.csrfToken
   };
 }
 
@@ -242,7 +242,7 @@ test("admin E2E: backup restore round-trip preserves data integrity", async () =
   const restoreBody = JSON.stringify({ filename: backupJson.data.file, reason: "e2e restore" });
   const restoreRes = await fetch(`${BACKEND}/api/v1/system/backup-restore`, {
     method: "POST",
-    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody }),
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody, idempotencyKey: crypto.randomUUID() }),
     body: restoreBody
   });
   const restoreJson = await restoreRes.json();

@@ -14,7 +14,8 @@ function trustedHeaders(session, path, { method = "GET", body = "", idempotencyK
   const timestamp = Date.now();
   const nonce = crypto.randomUUID();
   const payload = [method.toUpperCase(), path, String(timestamp), nonce, body].join("|");
-  const signature = crypto.createHmac("sha256", session.requestSigningKey).update(payload).digest("hex");
+  const signingKey = session.csrfToken;
+  const signature = crypto.createHmac("sha256", signingKey).update(payload).digest("hex");
 
   const headers = {
     cookie: session.cookie,
@@ -47,8 +48,7 @@ async function login(username, password) {
     status: response.status,
     json,
     cookie: cookiesFrom(response),
-    csrfToken: json.data?.csrfToken,
-    requestSigningKey: json.data?.requestSigningKey
+    csrfToken: json.data?.csrfToken
   };
 }
 
@@ -347,6 +347,33 @@ test("client users do not receive template discovery surfaces", async () => {
   assert.deepEqual(json.data.templates, []);
 });
 
+test("client search cannot return counseling_note entries (note isolation)", async () => {
+  const client = await login("client", "ClientPasscode2026");
+
+  const searchRes = await fetch(
+    `${BASE}/api/v1/mindtrack/search?q=breathing&sort=relevance`,
+    { headers: trustedHeaders(client, "/api/v1/mindtrack/search?q=breathing&sort=relevance") }
+  );
+  const searchJson = await searchRes.json();
+  assert.equal(searchRes.status, 200);
+
+  for (const entry of searchJson.data.entries) {
+    assert.notEqual(entry.entryType, "counseling_note",
+      "client search must never return counseling_note entries");
+  }
+
+  const broadRes = await fetch(
+    `${BASE}/api/v1/mindtrack/search?q=session&sort=relevance`,
+    { headers: trustedHeaders(client, "/api/v1/mindtrack/search?q=session&sort=relevance") }
+  );
+  const broadJson = await broadRes.json();
+  assert.equal(broadRes.status, 200);
+  for (const entry of broadJson.data.entries) {
+    assert.notEqual(entry.entryType, "counseling_note",
+      "client broad search must never return counseling_note entries");
+  }
+});
+
 test("backup restore round-trip: create backup then restore from it", async () => {
   const admin = await login("administrator", "AdminPasscode2026");
 
@@ -369,9 +396,10 @@ test("backup restore round-trip: create backup then restore from it", async () =
   assert.ok(listJson.data.includes(backupFilename), "backup file should appear in listing");
 
   const restoreBody = JSON.stringify({ filename: backupFilename, reason: "integration test restore" });
+  const restoreIdemKey = crypto.randomUUID();
   const restoreRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
-    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody }),
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody, idempotencyKey: restoreIdemKey }),
     body: restoreBody
   });
   const restoreJson = await restoreRes.json();
@@ -404,7 +432,7 @@ test("backup restore rejects nonexistent file", async () => {
   const body = JSON.stringify({ filename: "nonexistent.enc.json", reason: "test" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
-    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body, idempotencyKey: crypto.randomUUID() }),
     body
   });
   assert.equal(res.status, 404);
@@ -465,6 +493,54 @@ test("backup restore rejects missing reason", async () => {
     body
   });
   assert.equal(res.status, 400);
+});
+
+test("backup restore preserves audit logs (fidelity)", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+
+  const backupBody = JSON.stringify({ reason: "fidelity test backup" });
+  const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: backupBody }),
+    body: backupBody
+  });
+  const backupJson = await backupRes.json();
+  assert.equal(backupRes.status, 200);
+
+  const preRestoreAuditCheck = await fetch(`${BASE}/api/v1/system/audit-immutability-check`, {
+    headers: trustedHeaders(admin, "/api/v1/system/audit-immutability-check")
+  });
+  const preAudit = await preRestoreAuditCheck.json();
+  assert.equal(preAudit.data.checked, true, "audit logs should exist before restore");
+
+  const restoreBody = JSON.stringify({ filename: backupJson.data.file, reason: "fidelity restore" });
+  const restoreRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody, idempotencyKey: crypto.randomUUID() }),
+    body: restoreBody
+  });
+  assert.equal(restoreRes.status, 200);
+
+  const postAdmin = await login("administrator", "AdminPasscode2026");
+  const postRestoreAuditCheck = await fetch(`${BASE}/api/v1/system/audit-immutability-check`, {
+    headers: trustedHeaders(postAdmin, "/api/v1/system/audit-immutability-check")
+  });
+  const postAudit = await postRestoreAuditCheck.json();
+  assert.equal(postAudit.data.checked, true, "audit logs should exist after restore");
+  assert.equal(postAudit.data.immutable, true, "audit logs should remain immutable after restore");
+});
+
+test("backup restore rejects missing idempotency key", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const body = JSON.stringify({ filename: "any.enc.json", reason: "test" });
+  const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
+    body
+  });
+  assert.equal(res.status, 400);
+  const json = await res.json();
+  assert.equal(json.code, "IDEMPOTENCY_REQUIRED");
 });
 
 test("clinician search returns all entries for assigned clients regardless of entry author", async () => {

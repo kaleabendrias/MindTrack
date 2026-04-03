@@ -34,8 +34,7 @@ async function refreshSession() {
   const json = await response.json();
   sessionState = {
     ...(sessionState || {}),
-    csrfToken: json.data.csrfToken,
-    requestSigningKey: json.data.requestSigningKey
+    csrfToken: json.data.csrfToken
   };
 
   return sessionState;
@@ -51,12 +50,12 @@ export async function apiRequest(path, options = {}, attempt = 0) {
   const nonce = options.nonce || crypto.randomUUID();
   const bodyString = options.body ? String(options.body) : "";
 
-  if (sessionState?.requestSigningKey) {
+  if (sessionState?.csrfToken) {
     const timestamp = Date.now();
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
       "raw",
-      encoder.encode(sessionState.requestSigningKey),
+      encoder.encode(sessionState.csrfToken),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["sign"]

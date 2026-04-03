@@ -68,6 +68,10 @@ export class MongoSystemRepository {
       await SystemSettingsModel.deleteMany({});
       await SystemSettingsModel.insertMany(snapshot.settings);
     }
+    if (snapshot.auditLogs?.length) {
+      await AuditLogModel.collection.deleteMany({});
+      await AuditLogModel.collection.insertMany(snapshot.auditLogs);
+    }
   }
 
   async findOneAuditLog() {

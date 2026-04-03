@@ -369,52 +369,48 @@ export class SystemService {
     if (!reason || typeof reason !== "string" || !reason.trim()) {
       throw new AppError("reason is required", 400, "INVALID_REQUEST");
     }
-
-    const handler = async () => {
-      const fullPath = path.join(backupState.destination, filename);
-      let raw;
-      try {
-        raw = await fs.readFile(fullPath, "utf8");
-      } catch (_err) {
-        throw new AppError("backup file not found", 404, "BACKUP_NOT_FOUND");
-      }
-
-      const decrypted = decryptBuffer(raw);
-      const snapshot = JSON.parse(decrypted.toString("utf8"));
-
-      await this.systemRepository.restoreCollections(snapshot);
-
-      await this.auditService.logAction({
-        actorUserId: actor.id,
-        action: "create",
-        entityType: "backup_restore",
-        entityId: filename,
-        reason: reason || "backup restore",
-        before: null,
-        after: { filename, generatedAt: snapshot.generatedAt }
-      });
-
-      return {
-        statusCode: 200,
-        body: {
-          success: true,
-          filename,
-          generatedAt: snapshot.generatedAt
-        }
-      };
-    };
-
-    if (this.idempotencyService && idempotencyKey) {
-      return this.idempotencyService.execute({
-        key: idempotencyKey,
-        userId: actor.id,
-        action: `restore:${filename}`,
-        handler
-      });
+    if (!idempotencyKey || typeof idempotencyKey !== "string") {
+      throw new AppError("x-idempotency-key is required for restore", 400, "IDEMPOTENCY_REQUIRED");
     }
 
-    const result = await handler();
-    return result;
+    return this.idempotencyService.execute({
+      key: idempotencyKey,
+      userId: actor.id,
+      action: `restore:${filename}`,
+      handler: async () => {
+        const fullPath = path.join(backupState.destination, filename);
+        let raw;
+        try {
+          raw = await fs.readFile(fullPath, "utf8");
+        } catch (_err) {
+          throw new AppError("backup file not found", 404, "BACKUP_NOT_FOUND");
+        }
+
+        const decrypted = decryptBuffer(raw);
+        const snapshot = JSON.parse(decrypted.toString("utf8"));
+
+        await this.systemRepository.restoreCollections(snapshot);
+
+        await this.auditService.logAction({
+          actorUserId: actor.id,
+          action: "create",
+          entityType: "backup_restore",
+          entityId: filename,
+          reason,
+          before: null,
+          after: { filename, generatedAt: snapshot.generatedAt }
+        });
+
+        return {
+          statusCode: 200,
+          body: {
+            success: true,
+            filename,
+            generatedAt: snapshot.generatedAt
+          }
+        };
+      }
+    });
   }
 
   async securityFlags(userId) {

@@ -23,7 +23,6 @@ export class AuthController {
       data: {
         user: data.user,
         csrfToken: data.csrfToken,
-        requestSigningKey: data.requestSigningKey,
         expiresInSeconds: data.expiresInSeconds,
         refreshExpiresInSeconds: data.refreshExpiresInSeconds
       }
@@ -42,7 +41,6 @@ export class AuthController {
     res.status(200).json({
       data: {
         csrfToken: data.csrfToken,
-        requestSigningKey: data.requestSigningKey,
         expiresInSeconds: data.expiresInSeconds,
         refreshExpiresInSeconds: data.refreshExpiresInSeconds
       }
