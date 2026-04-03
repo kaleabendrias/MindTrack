@@ -212,6 +212,52 @@ test("administrator E2E: login, create client, run backup, governance, access bo
   assert.ok([403, 404].includes(selfContextRes.status), "admin must not access client self-context (403 forbidden or 404 no client record)");
 });
 
+test("client E2E: timeline excludes counseling_note entries (role isolation)", async () => {
+  const client = await login("client", "ClientPasscode2026");
+
+  const selfContextRes = await fetch(`${BACKEND}/api/v1/mindtrack/self-context`, {
+    headers: trustedHeaders(client, "/api/v1/mindtrack/self-context")
+  });
+  assert.equal(selfContextRes.status, 200);
+  const selfContext = await selfContextRes.json();
+
+  for (const entry of selfContext.data.timeline) {
+    assert.notEqual(entry.entryType, "counseling_note",
+      "client must not see counseling_note entries in timeline");
+  }
+});
+
+test("admin E2E: backup restore round-trip preserves data integrity", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+
+  const backupBody = JSON.stringify({ reason: "e2e restore test" });
+  const backupRes = await fetch(`${BACKEND}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: backupBody }),
+    body: backupBody
+  });
+  const backupJson = await backupRes.json();
+  assert.equal(backupRes.status, 200);
+
+  const restoreBody = JSON.stringify({ filename: backupJson.data.file, reason: "e2e restore" });
+  const restoreRes = await fetch(`${BACKEND}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody }),
+    body: restoreBody
+  });
+  const restoreJson = await restoreRes.json();
+  assert.equal(restoreRes.status, 200);
+  assert.equal(restoreJson.data.success, true);
+});
+
+test("work-order routes are no longer mounted", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const res = await fetch(`${BACKEND}/api/v1/work-orders`, {
+    headers: trustedHeaders(admin, "/api/v1/work-orders")
+  });
+  assert.equal(res.status, 404, "work-order endpoint should return 404");
+});
+
 test("password recovery throttling enforces rate limits", async () => {
   const recoveryBody = JSON.stringify({
     username: "client",

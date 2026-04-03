@@ -41,6 +41,16 @@ export function createSystemRoutes(controller) {
     asyncHandler(controller.runBackupNow)
   );
   router.get(
+    "/backup-files",
+    requirePermission(permissions.auditRead),
+    asyncHandler(controller.listBackupFiles)
+  );
+  router.post(
+    "/backup-restore",
+    requirePermission(permissions.auditRead),
+    asyncHandler(controller.restoreFromBackup)
+  );
+  router.get(
     "/audit-immutability-check",
     requirePermission(permissions.auditRead),
     asyncHandler(controller.auditImmutabilityCheck)

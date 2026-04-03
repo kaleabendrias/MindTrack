@@ -35,6 +35,8 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
     profileFields || { phone: true, address: true, tags: true, piiPolicyVisible: true }
   );
   const [backupStatus, setBackupStatus] = useState(null);
+  const [bootstrapState, setBootstrapState] = useState("loading");
+  const [bootstrapError, setBootstrapError] = useState("");
   const [clinicians, setClinicians] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [resetUserId, setResetUserId] = useState("");
@@ -52,13 +54,28 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
 
   useEffect(() => {
     (async () => {
-      const data = await fetchBackupStatus();
-      setBackupStatus(data);
-      const users = await fetchUsers();
-      setAllUsers(users);
-      setClinicians(users.filter((user) => user.role === "clinician"));
+      setBootstrapState("loading");
+      setBootstrapError("");
+      try {
+        const data = await fetchBackupStatus();
+        setBackupStatus(data);
+        const users = await fetchUsers();
+        setAllUsers(users);
+        setClinicians(users.filter((user) => user.role === "clinician"));
+        setBootstrapState("ready");
+      } catch (err) {
+        setBootstrapError(err.message || "Failed to load administrator data.");
+        setBootstrapState("error");
+      }
     })();
   }, []);
+
+  if (bootstrapState === "loading") {
+    return <section className="panel"><p>Loading administrator data...</p></section>;
+  }
+  if (bootstrapState === "error") {
+    return <section className="panel"><p className="inline-error">{bootstrapError}</p></section>;
+  }
 
   return (
     <section className="role-layout single-column">

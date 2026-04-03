@@ -8,6 +8,8 @@ export function ClientModule({ selfContext, onRefresh, profileFields, currentUse
   const [radius, setRadius] = useState(25);
   const [nearby, setNearby] = useState([]);
   const [nearbyView, setNearbyView] = useState("list");
+  const [nearbyState, setNearbyState] = useState("idle");
+  const [nearbyError, setNearbyError] = useState("");
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
   const [assessment, setAssessment] = useState({ title: "", body: "", tags: "" });
@@ -68,8 +70,16 @@ export function ClientModule({ selfContext, onRefresh, profileFields, currentUse
         <button
           type="button"
           onClick={async () => {
-            const data = await fetchNearbyFacilities(client._id, radius || 25);
-            setNearby(data);
+            setNearbyState("loading");
+            setNearbyError("");
+            try {
+              const data = await fetchNearbyFacilities(client._id, radius || 25);
+              setNearby(data);
+              setNearbyState(data.length ? "ready" : "empty");
+            } catch (err) {
+              setNearbyError(err.message || "Unable to load nearby facilities.");
+              setNearbyState("error");
+            }
           }}
         >
           Find nearby facilities
@@ -78,6 +88,9 @@ export function ClientModule({ selfContext, onRefresh, profileFields, currentUse
           <button type="button" onClick={() => setNearbyView("list")}>List</button>
           <button type="button" onClick={() => setNearbyView("schematic")}>Schematic</button>
         </div>
+        {nearbyState === "loading" ? <p>Loading nearby facilities...</p> : null}
+        {nearbyState === "error" ? <p className="inline-error">{nearbyError}</p> : null}
+        {nearbyState === "empty" ? <p>No facilities found within {radius} miles.</p> : null}
         {nearby.length ? (
           nearbyView === "list" ? (
             <ul className="facility-list">

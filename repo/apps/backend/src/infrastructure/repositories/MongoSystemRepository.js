@@ -47,6 +47,29 @@ export class MongoSystemRepository {
     };
   }
 
+  async restoreCollections(snapshot) {
+    if (snapshot.users?.length) {
+      await UserModel.deleteMany({});
+      await UserModel.insertMany(snapshot.users);
+    }
+    if (snapshot.clients?.length) {
+      await MindTrackClientModel.deleteMany({});
+      await MindTrackClientModel.insertMany(snapshot.clients);
+    }
+    if (snapshot.entries?.length) {
+      await MindTrackEntryModel.deleteMany({});
+      await MindTrackEntryModel.insertMany(snapshot.entries);
+    }
+    if (snapshot.facilities?.length) {
+      await FacilityModel.deleteMany({});
+      await FacilityModel.insertMany(snapshot.facilities);
+    }
+    if (snapshot.settings?.length) {
+      await SystemSettingsModel.deleteMany({});
+      await SystemSettingsModel.insertMany(snapshot.settings);
+    }
+  }
+
   async findOneAuditLog() {
     return AuditLogModel.findOne().lean();
   }

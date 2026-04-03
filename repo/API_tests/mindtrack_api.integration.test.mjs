@@ -347,6 +347,80 @@ test("client users do not receive template discovery surfaces", async () => {
   assert.deepEqual(json.data.templates, []);
 });
 
+test("backup restore round-trip: create backup then restore from it", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+
+  const backupBody = JSON.stringify({ reason: "pre-restore backup" });
+  const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: backupBody }),
+    body: backupBody
+  });
+  const backupJson = await backupRes.json();
+  assert.equal(backupRes.status, 200);
+  assert.equal(backupJson.data.success, true);
+  const backupFilename = backupJson.data.file;
+
+  const listRes = await fetch(`${BASE}/api/v1/system/backup-files`, {
+    headers: trustedHeaders(admin, "/api/v1/system/backup-files")
+  });
+  const listJson = await listRes.json();
+  assert.equal(listRes.status, 200);
+  assert.ok(listJson.data.includes(backupFilename), "backup file should appear in listing");
+
+  const restoreBody = JSON.stringify({ filename: backupFilename, reason: "integration test restore" });
+  const restoreRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody }),
+    body: restoreBody
+  });
+  const restoreJson = await restoreRes.json();
+  assert.equal(restoreRes.status, 200);
+  assert.equal(restoreJson.data.success, true);
+  assert.equal(restoreJson.data.filename, backupFilename);
+
+  const clinician = await login("clinician", "ClinicianPass2026");
+  const clientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
+  });
+  assert.equal(clientsRes.status, 200);
+  const clientsJson = await clientsRes.json();
+  assert.ok(clientsJson.data.length >= 1, "restored data should have clients");
+});
+
+test("backup restore rejects missing filename", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const body = JSON.stringify({ reason: "missing filename" });
+  const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
+    body
+  });
+  assert.equal(res.status, 400);
+});
+
+test("backup restore rejects nonexistent file", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const body = JSON.stringify({ filename: "nonexistent.enc.json", reason: "test" });
+  const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
+    body
+  });
+  assert.equal(res.status, 404);
+});
+
+test("clinician cannot access restore endpoint", async () => {
+  const clinician = await login("clinician", "ClinicianPass2026");
+  const body = JSON.stringify({ filename: "any.enc.json", reason: "test" });
+  const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, "/api/v1/system/backup-restore", { method: "POST", body }),
+    body
+  });
+  assert.equal(res.status, 403);
+});
+
 test("behavior-based abnormal access rules persist metadata for rapid lookups and repeated backup attempts", async () => {
   const clinician = await login("clinician", "ClinicianPass2026");
   for (let index = 0; index < 8; index += 1) {

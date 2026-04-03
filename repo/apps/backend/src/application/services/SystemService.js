@@ -27,6 +27,17 @@ function encryptBuffer(buffer) {
   });
 }
 
+function decryptBuffer(encryptedJson) {
+  const parsed = typeof encryptedJson === "string" ? JSON.parse(encryptedJson) : encryptedJson;
+  const iv = Buffer.from(parsed.iv, "base64");
+  const tag = Buffer.from(parsed.tag, "base64");
+  const data = Buffer.from(parsed.data, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", getBackupKey(), iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+  return decrypted;
+}
+
 export class SystemService {
   constructor(systemRepository, auditService, securityMonitoringService) {
     this.systemRepository = systemRepository;
@@ -39,17 +50,73 @@ export class SystemService {
       return;
     }
 
-    backupState.timer = setInterval(async () => {
-      const now = new Date();
-      const today = now.toISOString().slice(0, 10);
-      if (now.getUTCHours() === 0 && backupState.lastScheduledRunDate !== today) {
+    this._startupCatchUp().catch((err) => {
+      console.error("Backup startup catch-up failed:", err.message);
+    });
+
+    this._scheduleNextNightly();
+  }
+
+  async _startupCatchUp() {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+
+    if (backupState.lastScheduledRunDate === today) {
+      return;
+    }
+
+    await fs.mkdir(backupState.destination, { recursive: true });
+    const files = await fs.readdir(backupState.destination);
+    const todayBackup = files.find((f) => f.includes(today.replace(/-/g, "-")) && f.endsWith(".enc.json"));
+
+    if (!todayBackup) {
+      backupState.lastScheduledRunDate = today;
+      await this.runBackupNow({
+        actor: { id: "system", username: "system" },
+        reason: "startup catch-up nightly backup"
+      });
+    } else {
+      backupState.lastScheduledRunDate = today;
+    }
+  }
+
+  _scheduleNextNightly() {
+    const now = new Date();
+    const nextMidnight = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0, 0, 0, 0
+    ));
+    const msUntilMidnight = nextMidnight.getTime() - now.getTime();
+
+    backupState.timer = setTimeout(async () => {
+      backupState.timer = null;
+      const today = new Date().toISOString().slice(0, 10);
+      if (backupState.lastScheduledRunDate !== today) {
         backupState.lastScheduledRunDate = today;
-        await this.runBackupNow({
-          actor: { id: "system", username: "system" },
-          reason: "nightly scheduled backup"
-        });
+        try {
+          await this.runBackupNow({
+            actor: { id: "system", username: "system" },
+            reason: "nightly scheduled backup"
+          });
+        } catch (err) {
+          console.error("Nightly backup failed:", err.message);
+        }
       }
-    }, 60 * 60 * 1000);
+      this._scheduleNextNightly();
+    }, msUntilMidnight);
+
+    if (backupState.timer.unref) {
+      backupState.timer.unref();
+    }
+  }
+
+  stop() {
+    if (backupState.timer) {
+      clearTimeout(backupState.timer);
+      backupState.timer = null;
+    }
   }
 
   getOfflinePolicy() {
@@ -285,6 +352,47 @@ export class SystemService {
     return {
       ...updated.profileFields,
       customProfileFields: updated.customProfileFields || []
+    };
+  }
+
+  async listBackupFiles() {
+    await fs.mkdir(backupState.destination, { recursive: true });
+    const files = await fs.readdir(backupState.destination);
+    return files.filter((f) => f.endsWith(".enc.json")).sort().reverse();
+  }
+
+  async restoreFromBackup({ actor, filename, reason }) {
+    if (!filename) {
+      throw new AppError("filename is required", 400, "INVALID_REQUEST");
+    }
+
+    const fullPath = path.join(backupState.destination, filename);
+    let raw;
+    try {
+      raw = await fs.readFile(fullPath, "utf8");
+    } catch (_err) {
+      throw new AppError("backup file not found", 404, "BACKUP_NOT_FOUND");
+    }
+
+    const decrypted = decryptBuffer(raw);
+    const snapshot = JSON.parse(decrypted.toString("utf8"));
+
+    await this.systemRepository.restoreCollections(snapshot);
+
+    await this.auditService.logAction({
+      actorUserId: actor.id,
+      action: "create",
+      entityType: "backup_restore",
+      entityId: filename,
+      reason: reason || "backup restore",
+      before: null,
+      after: { filename, generatedAt: snapshot.generatedAt }
+    });
+
+    return {
+      success: true,
+      filename,
+      generatedAt: snapshot.generatedAt
     };
   }
 

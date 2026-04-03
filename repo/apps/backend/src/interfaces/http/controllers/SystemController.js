@@ -55,6 +55,20 @@ export class SystemController {
     res.status(200).json({ data });
   };
 
+  listBackupFiles = async (_req, res) => {
+    const data = await this.systemService.listBackupFiles();
+    res.status(200).json({ data });
+  };
+
+  restoreFromBackup = async (req, res) => {
+    const data = await this.systemService.restoreFromBackup({
+      actor: req.user,
+      filename: req.body.filename,
+      reason: req.body.reason
+    });
+    res.status(200).json({ data });
+  };
+
   runBackupNow = async (req, res) => {
     const data = await this.systemService.runBackupNow({
       actor: req.user,

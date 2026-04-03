@@ -10,7 +10,7 @@ import { MindTrackService } from "../../application/services/MindTrackService.js
 import { SecurityMonitoringService } from "../../application/services/SecurityMonitoringService.js";
 import { SystemService } from "../../application/services/SystemService.js";
 import { ThirdPartyLoginService } from "../../application/services/ThirdPartyLoginService.js";
-import { WorkOrderService } from "../../application/services/WorkOrderService.js";
+
 import { MongoAuditLogRepository } from "../../infrastructure/repositories/MongoAuditLogRepository.js";
 import { MongoIdempotencyRepository } from "../../infrastructure/repositories/MongoIdempotencyRepository.js";
 import { MongoMindTrackRepository } from "../../infrastructure/repositories/MongoMindTrackRepository.js";
@@ -18,12 +18,12 @@ import { MongoSecurityFlagRepository } from "../../infrastructure/repositories/M
 import { MongoSessionRepository } from "../../infrastructure/repositories/MongoSessionRepository.js";
 import { MongoSystemRepository } from "../../infrastructure/repositories/MongoSystemRepository.js";
 import { MongoUserRepository } from "../../infrastructure/repositories/MongoUserRepository.js";
-import { MongoWorkOrderRepository } from "../../infrastructure/repositories/MongoWorkOrderRepository.js";
+
 import { AuthController } from "./controllers/AuthController.js";
 import { MindTrackController } from "./controllers/MindTrackController.js";
 import { SystemController } from "./controllers/SystemController.js";
 import { UserController } from "./controllers/UserController.js";
-import { WorkOrderController } from "./controllers/WorkOrderController.js";
+
 import { createAuthenticateMiddleware } from "./middleware/authMiddleware.js";
 import { asyncHandler } from "./middleware/asyncHandler.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -35,14 +35,14 @@ import { createHealthRoutes } from "./routes/healthRoutes.js";
 import { createMindTrackRoutes } from "./routes/mindTrackRoutes.js";
 import { createSystemRoutes } from "./routes/systemRoutes.js";
 import { createUserRoutes } from "./routes/userRoutes.js";
-import { createWorkOrderRoutes } from "./routes/workOrderRoutes.js";
+
 
 export function createApp() {
   const app = express();
 
   const userRepository = new MongoUserRepository();
   const sessionRepository = new MongoSessionRepository();
-  const workOrderRepository = new MongoWorkOrderRepository();
+
   const auditRepository = new MongoAuditLogRepository();
   const securityFlagRepository = new MongoSecurityFlagRepository();
   const mindTrackRepository = new MongoMindTrackRepository();
@@ -56,7 +56,7 @@ export function createApp() {
     sessionRepository,
     auditService
   });
-  const workOrderService = new WorkOrderService(workOrderRepository, auditService);
+
   const attachmentStorageService = new AttachmentStorageService();
   const mindTrackService = new MindTrackService({
     mindTrackRepository,
@@ -74,7 +74,7 @@ export function createApp() {
   systemService.start();
 
   const authController = new AuthController(authService, thirdPartyLoginService);
-  const workOrderController = new WorkOrderController(workOrderService);
+
   const mindTrackController = new MindTrackController(mindTrackService);
   const systemController = new SystemController(systemService);
   const userController = new UserController(authService, userRepository);
@@ -112,7 +112,7 @@ export function createApp() {
   app.use("/api/v1/auth", createAuthRoutes(authController, authenticate));
 
   app.use("/api/v1", authenticate, signedRequestRequired, sessionRateLimiter, securityMonitoring);
-  app.use("/api/v1/work-orders", createWorkOrderRoutes(workOrderController));
+
   app.use("/api/v1/mindtrack", createMindTrackRoutes(mindTrackController));
   app.use("/api/v1/system", createSystemRoutes(systemController));
   app.use("/api/v1/users", createUserRoutes(userController));

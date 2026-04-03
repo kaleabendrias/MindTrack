@@ -1,5 +1,3 @@
-import { WorkOrderService } from "../../application/services/WorkOrderService.js";
-import { WorkOrder } from "../../domain/models/WorkOrder.js";
 import { connectMongo, disconnectMongo } from "../database/mongooseConnection.js";
 import { FacilityModel } from "../persistence/models/FacilityModel.js";
 import { MindTrackClientModel } from "../persistence/models/MindTrackClientModel.js";
@@ -7,7 +5,6 @@ import { MindTrackEntryModel } from "../persistence/models/MindTrackEntryModel.j
 import { MindTrackTemplateModel } from "../persistence/models/MindTrackTemplateModel.js";
 import { SystemSettingsModel } from "../persistence/models/SystemSettingsModel.js";
 import { UserModel } from "../persistence/models/UserModel.js";
-import { MongoWorkOrderRepository } from "../repositories/MongoWorkOrderRepository.js";
 import { encryptValue } from "../security/fieldCrypto.js";
 import { hashSecret } from "../security/passwordHasher.js";
 import {
@@ -15,29 +12,11 @@ import {
   seedMindTrackClients,
   seedMindTrackEntries,
   seedMindTrackTemplates,
-  seedUsers,
-  seedWorkOrders
+  seedUsers
 } from "./seedData.js";
 
 async function runSeed() {
   await connectMongo();
-
-  const repository = new MongoWorkOrderRepository();
-  const service = new WorkOrderService(repository);
-
-  const normalized = seedWorkOrders.map(
-    (item) =>
-      new WorkOrder({
-        id: item.id,
-        title: item.title,
-        description: item.description,
-        status: item.status,
-        assignedRole: item.assignedRole,
-        createdAt: item.createdAt
-      })
-  );
-
-  await repository.upsertMany(normalized);
 
   const now = new Date();
   for (const user of seedUsers) {
@@ -155,10 +134,8 @@ async function runSeed() {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  const total = await service.list();
-
   console.log(
-    `Seed complete. Total work orders: ${total.length}. Users: ${seedUsers.length}. MindTrack clients: ${seedMindTrackClients.length}.`
+    `Seed complete. Users: ${seedUsers.length}. MindTrack clients: ${seedMindTrackClients.length}.`
   );
 }
 
