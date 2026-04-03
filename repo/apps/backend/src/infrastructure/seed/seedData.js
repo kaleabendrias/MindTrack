@@ -1,80 +1,58 @@
-export const seedWorkOrders = [
-  {
-    id: "000000000000000000000001",
-    title: "Inspect backup power units",
-    description: "Validate battery health and update maintenance register.",
-    status: "queued",
-    assignedRole: "operator",
-    createdAt: "2025-01-10T09:00:00.000Z"
-  },
-  {
-    id: "000000000000000000000002",
-    title: "Reconcile offline sync logs",
-    description: "Check sync batches generated during disconnected operations.",
-    status: "in_progress",
-    assignedRole: "admin",
-    createdAt: "2025-01-10T10:00:00.000Z"
-  },
-  {
-    id: "000000000000000000000003",
-    title: "Patch local kiosk assets",
-    description: "Apply approved static asset package to station clients.",
-    status: "done",
-    assignedRole: "operator",
-    createdAt: "2025-01-10T11:00:00.000Z"
-  }
-];
-
-export const seedUsers = [
-  {
-    id: "0000000000000000000000a1",
-    username: "administrator",
-    role: "administrator",
-    mindTrackClientId: null,
-    permissions: ["PII_VIEW", "USER_MANAGE", "AUDIT_READ"],
-    password: "AdminPasscode2026",
-    phone: "+1-555-0100",
-    address: "100 Control Center Ave",
-    securityQuestions: [
-      {
-        question: "What is your primary facility code?",
-        answer: "alpha-001"
-      }
-    ]
-  },
-  {
-    id: "0000000000000000000000b1",
-    username: "clinician",
-    role: "clinician",
-    mindTrackClientId: null,
-    permissions: [],
-    password: "ClinicianPass2026",
-    phone: "+1-555-0199",
-    address: "200 Field Station Road",
-    securityQuestions: [
-      {
-        question: "What is your assigned station name?",
-        answer: "station-7"
-      }
-    ]
-  },
-  {
-    id: "0000000000000000000000c1",
-    username: "client",
-    role: "client",
-    mindTrackClientId: "cli001",
-    permissions: [],
-    password: "ClientPasscode2026",
-    phone: "+1-555-0155",
-    address: "300 Wellness Way",
-    securityQuestions: [
-      {
-        question: "What is your onboarding month?",
-        answer: "january"
-      }
-    ]
-  }
-];
+export function getSeedUsers() {
+  return [
+    {
+      id: "0000000000000000000000a1",
+      username: "administrator",
+      role: "administrator",
+      mindTrackClientId: null,
+      permissions: ["PII_VIEW", "USER_MANAGE", "AUDIT_READ"],
+      password: process.env.SEED_ADMIN_PASSWORD || "RotateMe_Admin_2026x1",
+      mustRotatePassword: true,
+      phone: "+1-555-0100",
+      address: "100 Control Center Ave",
+      securityQuestions: [
+        {
+          question: "What is your primary facility code?",
+          answer: "alpha-001"
+        }
+      ]
+    },
+    {
+      id: "0000000000000000000000b1",
+      username: "clinician",
+      role: "clinician",
+      mindTrackClientId: null,
+      permissions: [],
+      password: process.env.SEED_CLINICIAN_PASSWORD || "RotateMe_Clinician_2026x1",
+      mustRotatePassword: true,
+      phone: "+1-555-0199",
+      address: "200 Field Station Road",
+      securityQuestions: [
+        {
+          question: "What is your assigned station name?",
+          answer: "station-7"
+        }
+      ]
+    },
+    {
+      id: "0000000000000000000000c1",
+      username: "client",
+      role: "client",
+      mindTrackClientId: "cli001",
+      permissions: [],
+      password: process.env.SEED_CLIENT_PASSWORD || "RotateMe_Client_2026x1",
+      mustRotatePassword: true,
+      phone: "+1-555-0155",
+      address: "300 Wellness Way",
+      securityQuestions: [
+        {
+          question: "What is your onboarding month?",
+          answer: "january"
+        }
+      ]
+    }
+  ];
+}
 
 export const seedFacilities = [
   {

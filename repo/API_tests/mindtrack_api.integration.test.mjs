@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
 const BASE = process.env.BACKEND_BASE_URL || "http://127.0.0.1:4000";
+const ADMIN_PASS = process.env.SEED_ADMIN_PASSWORD || "RotateMe_Admin_2026x1";
+const CLINICIAN_PASS = process.env.SEED_CLINICIAN_PASSWORD || "RotateMe_Clinician_2026x1";
+const CLIENT_PASS = process.env.SEED_CLIENT_PASSWORD || "RotateMe_Client_2026x1";
 
 function cookiesFrom(response) {
   return (response.headers.getSetCookie?.() || [])
@@ -53,7 +56,7 @@ async function login(username, password) {
 }
 
 test("trusted mutating request enforcement blocks missing csrf/nonce", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
   const response = await fetch(`${BASE}/api/v1/mindtrack/entries`, {
     method: "POST",
     headers: {
@@ -71,7 +74,7 @@ test("trusted mutating request enforcement blocks missing csrf/nonce", async () 
 });
 
 test("bad hmac signature is rejected on protected route", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
   const response = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
     headers: {
       cookie: clinician.cookie,
@@ -85,7 +88,7 @@ test("bad hmac signature is rejected on protected route", async () => {
 });
 
 test("unauthorized role access returns 403 and signed session rate limiting returns 429", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const forbidden = await fetch(`${BASE}/api/v1/system/backup-status`, {
     headers: trustedHeaders(clinician, "/api/v1/system/backup-status")
@@ -106,9 +109,9 @@ test("unauthorized role access returns 403 and signed session rate limiting retu
 });
 
 test("permission-gated PII visibility and object isolation differ by role", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
-  const admin = await login("administrator", "AdminPasscode2026");
-  const client = await login("client", "ClientPasscode2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  const admin = await login("administrator", ADMIN_PASS);
+  const client = await login("client", CLIENT_PASS);
 
   const clinicianClientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
     headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
@@ -139,7 +142,7 @@ test("permission-gated PII visibility and object isolation differ by role", asyn
 });
 
 test("merge flow preserves audit immutability and idempotent critical-write replay", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const createBody = JSON.stringify({
     name: "Merge Candidate",
@@ -191,7 +194,7 @@ test("merge flow preserves audit immutability and idempotent critical-write repl
 });
 
 test("administrator create-client requires valid primaryClinicianId", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const missingBody = JSON.stringify({
     name: "No Clinician",
@@ -228,8 +231,8 @@ test("administrator create-client requires valid primaryClinicianId", async () =
 });
 
 test("retention and legal-hold enforcement blocks mutation paths", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const governanceBody = JSON.stringify({
     legalHold: true,
@@ -253,8 +256,8 @@ test("retention and legal-hold enforcement blocks mutation paths", async () => {
 });
 
 test("backup lifecycle, radius constraints, and offline policy behave as expected", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const statusRes = await fetch(`${BASE}/api/v1/system/backup-status`, {
     headers: trustedHeaders(admin, "/api/v1/system/backup-status")
@@ -293,8 +296,8 @@ test("backup lifecycle, radius constraints, and offline policy behave as expecte
 });
 
 test("template discovery and persisted profile-field settings are operational", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const settingsBody = JSON.stringify({
     profileFields: {
@@ -335,7 +338,7 @@ test("template discovery and persisted profile-field settings are operational", 
 });
 
 test("client users do not receive template discovery surfaces", async () => {
-  const client = await login("client", "ClientPasscode2026");
+  const client = await login("client", CLIENT_PASS);
   const res = await fetch(
     `${BASE}/api/v1/mindtrack/search?q=template&channel=assessment&sort=relevance`,
     {
@@ -348,7 +351,7 @@ test("client users do not receive template discovery surfaces", async () => {
 });
 
 test("client search cannot return counseling_note entries (note isolation)", async () => {
-  const client = await login("client", "ClientPasscode2026");
+  const client = await login("client", CLIENT_PASS);
 
   const searchRes = await fetch(
     `${BASE}/api/v1/mindtrack/search?q=breathing&sort=relevance`,
@@ -375,7 +378,7 @@ test("client search cannot return counseling_note entries (note isolation)", asy
 });
 
 test("backup restore round-trip: create backup then restore from it", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const backupBody = JSON.stringify({ reason: "pre-restore backup" });
   const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
@@ -407,7 +410,7 @@ test("backup restore round-trip: create backup then restore from it", async () =
   assert.equal(restoreJson.data.success, true);
   assert.equal(restoreJson.data.filename, backupFilename);
 
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
   const clientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
     headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
   });
@@ -417,7 +420,7 @@ test("backup restore round-trip: create backup then restore from it", async () =
 });
 
 test("backup restore rejects missing filename", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   const body = JSON.stringify({ reason: "missing filename" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
@@ -428,7 +431,7 @@ test("backup restore rejects missing filename", async () => {
 });
 
 test("backup restore rejects nonexistent file", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   const body = JSON.stringify({ filename: "nonexistent.enc.json", reason: "test" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
@@ -439,7 +442,7 @@ test("backup restore rejects nonexistent file", async () => {
 });
 
 test("clinician cannot access restore endpoint", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
   const body = JSON.stringify({ filename: "any.enc.json", reason: "test" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
@@ -450,7 +453,7 @@ test("clinician cannot access restore endpoint", async () => {
 });
 
 test("backup restore idempotency: replayed request returns same result", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const backupBody = JSON.stringify({ reason: "pre-idempotent-restore backup" });
   const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
@@ -485,7 +488,7 @@ test("backup restore idempotency: replayed request returns same result", async (
 });
 
 test("backup restore rejects missing reason", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   const body = JSON.stringify({ filename: "any.enc.json" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
@@ -496,7 +499,7 @@ test("backup restore rejects missing reason", async () => {
 });
 
 test("backup restore preserves audit logs (fidelity)", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const backupBody = JSON.stringify({ reason: "fidelity test backup" });
   const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
@@ -521,7 +524,7 @@ test("backup restore preserves audit logs (fidelity)", async () => {
   });
   assert.equal(restoreRes.status, 200);
 
-  const postAdmin = await login("administrator", "AdminPasscode2026");
+  const postAdmin = await login("administrator", ADMIN_PASS);
   const postRestoreAuditCheck = await fetch(`${BASE}/api/v1/system/audit-immutability-check`, {
     headers: trustedHeaders(postAdmin, "/api/v1/system/audit-immutability-check")
   });
@@ -531,7 +534,7 @@ test("backup restore preserves audit logs (fidelity)", async () => {
 });
 
 test("backup restore rejects missing idempotency key", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   const body = JSON.stringify({ filename: "any.enc.json", reason: "test" });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
@@ -544,8 +547,8 @@ test("backup restore rejects missing idempotency key", async () => {
 });
 
 test("clinician search returns all entries for assigned clients regardless of entry author", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const adminEntryBody = JSON.stringify({
     clientId: "cli001",
@@ -576,7 +579,7 @@ test("clinician search returns all entries for assigned clients regardless of en
 });
 
 test("behavior-based abnormal access rules persist metadata for rapid lookups and repeated backup attempts", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
   for (let index = 0; index < 8; index += 1) {
     await fetch(`${BASE}/api/v1/mindtrack/clients`, {
       headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
@@ -589,7 +592,7 @@ test("behavior-based abnormal access rules persist metadata for rapid lookups an
   assert.equal(clinicianFlagsRes.status, 200);
   assert.equal(clinicianFlags.data.some((flag) => flag.ruleCode === "RULE_RAPID_RECORD_LOOKUP"), true);
 
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   for (let index = 0; index < 3; index += 1) {
     const body = JSON.stringify({ reason: `backup attempt ${index}` });
     await fetch(`${BASE}/api/v1/system/backup-run`, {

@@ -1,14 +1,48 @@
 import { useState } from "react";
-import { recoverPassword } from "../api/authApi.js";
+import { fetchSecurityQuestions, recoverPassword } from "../api/authApi.js";
 import { validatePassword } from "../shared/utils/passwordPolicy.js";
 
 export function LoginPage({ onLogin, error }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showRecovery, setShowRecovery] = useState(false);
-  const [recovery, setRecovery] = useState({ username: "", question: "", answer: "", newPassword: "" });
+  const [recoveryUsername, setRecoveryUsername] = useState("");
+  const [questions, setQuestions] = useState([]);
+  const [selectedQuestion, setSelectedQuestion] = useState("");
+  const [recoveryAnswer, setRecoveryAnswer] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [recoveryMessage, setRecoveryMessage] = useState("");
   const [recoveryError, setRecoveryError] = useState("");
+  const [questionsFetched, setQuestionsFetched] = useState(false);
+
+  async function loadQuestions() {
+    setRecoveryError("");
+    setQuestionsFetched(false);
+    if (!recoveryUsername.trim()) {
+      setRecoveryError("Enter your username first.");
+      return;
+    }
+    try {
+      const data = await fetchSecurityQuestions(recoveryUsername.trim());
+      setQuestions(data);
+      setSelectedQuestion(data.length ? data[0].question : "");
+      setQuestionsFetched(true);
+    } catch (err) {
+      setRecoveryError(err.message);
+    }
+  }
+
+  function resetRecoveryState() {
+    setShowRecovery(false);
+    setRecoveryUsername("");
+    setQuestions([]);
+    setSelectedQuestion("");
+    setRecoveryAnswer("");
+    setNewPassword("");
+    setRecoveryMessage("");
+    setRecoveryError("");
+    setQuestionsFetched(false);
+  }
 
   return (
     <div className="login-shell">
@@ -54,30 +88,77 @@ export function LoginPage({ onLogin, error }) {
             event.preventDefault();
             setRecoveryMessage("");
             setRecoveryError("");
-            const policyError = validatePassword(recovery.newPassword);
+            const policyError = validatePassword(newPassword);
             if (policyError) {
               setRecoveryError(policyError);
               return;
             }
             try {
-              await recoverPassword(recovery);
+              await recoverPassword({
+                username: recoveryUsername,
+                question: selectedQuestion,
+                answer: recoveryAnswer,
+                newPassword
+              });
               setRecoveryMessage("Password reset successfully. You can now sign in.");
-              setRecovery({ username: "", question: "", answer: "", newPassword: "" });
+              setRecoveryAnswer("");
+              setNewPassword("");
             } catch (err) {
               setRecoveryError(err.message);
             }
           }}
         >
           <h2>Password Recovery</h2>
-          <p style={{ fontSize: "0.85rem", color: "#6b7280" }}>Answer your security question to reset your password.</p>
-          <input value={recovery.username} onChange={(e) => setRecovery((p) => ({ ...p, username: e.target.value }))} placeholder="username" />
-          <input value={recovery.question} onChange={(e) => setRecovery((p) => ({ ...p, question: e.target.value }))} placeholder="Security question" />
-          <input value={recovery.answer} onChange={(e) => setRecovery((p) => ({ ...p, answer: e.target.value }))} placeholder="Your answer" />
-          <input type="password" value={recovery.newPassword} onChange={(e) => setRecovery((p) => ({ ...p, newPassword: e.target.value }))} placeholder="New password (min 12 chars, 1 letter, 1 number)" />
-          <button type="submit">Reset Password</button>
+          <p style={{ fontSize: "0.85rem", color: "#6b7280" }}>Enter your username to retrieve your security question.</p>
+
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+            <input
+              value={recoveryUsername}
+              onChange={(e) => { setRecoveryUsername(e.target.value); setQuestionsFetched(false); }}
+              placeholder="username"
+              style={{ flex: 1 }}
+            />
+            <button type="button" onClick={loadQuestions}>Look up</button>
+          </div>
+
+          {questionsFetched && questions.length > 0 ? (
+            <>
+              <label style={{ marginTop: "0.75rem", display: "block" }}>
+                Security question
+                {questions.length === 1 ? (
+                  <p style={{ fontWeight: "bold", margin: "0.25rem 0" }}>{questions[0].question}</p>
+                ) : (
+                  <select value={selectedQuestion} onChange={(e) => setSelectedQuestion(e.target.value)}>
+                    {questions.map((q) => (
+                      <option key={q.question} value={q.question}>{q.question}</option>
+                    ))}
+                  </select>
+                )}
+              </label>
+              <input
+                type="password"
+                value={recoveryAnswer}
+                onChange={(e) => setRecoveryAnswer(e.target.value)}
+                placeholder="Your answer (masked)"
+                autoComplete="off"
+              />
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="New password (min 12 chars, 1 letter, 1 number)"
+              />
+              <button type="submit">Reset Password</button>
+            </>
+          ) : null}
+
+          {questionsFetched && questions.length === 0 ? (
+            <p className="inline-error">No security questions found for this user.</p>
+          ) : null}
+
           {recoveryMessage ? <p className="inline-message">{recoveryMessage}</p> : null}
           {recoveryError ? <p className="inline-error">{recoveryError}</p> : null}
-          <button type="button" onClick={() => { setShowRecovery(false); setRecoveryError(""); setRecoveryMessage(""); }} style={{ background: "none", border: "none", color: "#3b82f6", cursor: "pointer", textDecoration: "underline", padding: 0, marginTop: "0.5rem" }}>
+          <button type="button" onClick={resetRecoveryState} style={{ background: "none", border: "none", color: "#3b82f6", cursor: "pointer", textDecoration: "underline", padding: 0, marginTop: "0.5rem" }}>
             Back to sign in
           </button>
         </form>

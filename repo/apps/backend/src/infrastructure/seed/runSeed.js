@@ -8,17 +8,18 @@ import { UserModel } from "../persistence/models/UserModel.js";
 import { encryptValue } from "../security/fieldCrypto.js";
 import { hashSecret } from "../security/passwordHasher.js";
 import {
+  getSeedUsers,
   seedFacilities,
   seedMindTrackClients,
   seedMindTrackEntries,
-  seedMindTrackTemplates,
-  seedUsers
+  seedMindTrackTemplates
 } from "./seedData.js";
 
 async function runSeed() {
   await connectMongo();
 
   const now = new Date();
+  const seedUsers = getSeedUsers();
   for (const user of seedUsers) {
     const securityQuestions = [];
     for (const item of user.securityQuestions) {

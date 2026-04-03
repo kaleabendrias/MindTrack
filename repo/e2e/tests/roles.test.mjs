@@ -4,6 +4,9 @@ import crypto from "node:crypto";
 
 const BACKEND = process.env.BACKEND_BASE_URL || "http://127.0.0.1:4000";
 const FRONTEND = process.env.FRONTEND_BASE_URL || "http://127.0.0.1:3000";
+const ADMIN_PASS = process.env.SEED_ADMIN_PASSWORD || "RotateMe_Admin_2026x1";
+const CLINICIAN_PASS = process.env.SEED_CLINICIAN_PASSWORD || "RotateMe_Clinician_2026x1";
+const CLIENT_PASS = process.env.SEED_CLIENT_PASSWORD || "RotateMe_Client_2026x1";
 
 function cookiesFrom(response) {
   return (response.headers.getSetCookie?.() || [])
@@ -54,7 +57,7 @@ async function login(username, password) {
 }
 
 test("client E2E: login, self-context, self-assessment, access boundary enforcement", async () => {
-  const client = await login("client", "ClientPasscode2026");
+  const client = await login("client", CLIENT_PASS);
 
   const selfContextRes = await fetch(`${BACKEND}/api/v1/mindtrack/self-context`, {
     headers: trustedHeaders(client, "/api/v1/mindtrack/self-context")
@@ -91,7 +94,7 @@ test("client E2E: login, self-context, self-assessment, access boundary enforcem
 });
 
 test("clinician E2E: login, list clients, create entry, client registration, profile edit, access boundaries", async () => {
-  const clinician = await login("clinician", "ClinicianPass2026");
+  const clinician = await login("clinician", CLINICIAN_PASS);
 
   const clientsRes = await fetch(`${BACKEND}/api/v1/mindtrack/clients`, {
     headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
@@ -164,7 +167,7 @@ test("clinician E2E: login, list clients, create entry, client registration, pro
 });
 
 test("administrator E2E: login, create client, run backup, governance, access boundary enforcement", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const createBody = JSON.stringify({
     name: "E2E Admin Client",
@@ -213,7 +216,7 @@ test("administrator E2E: login, create client, run backup, governance, access bo
 });
 
 test("client E2E: timeline excludes counseling_note entries (role isolation)", async () => {
-  const client = await login("client", "ClientPasscode2026");
+  const client = await login("client", CLIENT_PASS);
 
   const selfContextRes = await fetch(`${BACKEND}/api/v1/mindtrack/self-context`, {
     headers: trustedHeaders(client, "/api/v1/mindtrack/self-context")
@@ -228,7 +231,7 @@ test("client E2E: timeline excludes counseling_note entries (role isolation)", a
 });
 
 test("admin E2E: backup restore round-trip preserves data integrity", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
 
   const backupBody = JSON.stringify({ reason: "e2e restore test" });
   const backupRes = await fetch(`${BACKEND}/api/v1/system/backup-run`, {
@@ -251,7 +254,7 @@ test("admin E2E: backup restore round-trip preserves data integrity", async () =
 });
 
 test("work-order routes are no longer mounted", async () => {
-  const admin = await login("administrator", "AdminPasscode2026");
+  const admin = await login("administrator", ADMIN_PASS);
   const res = await fetch(`${BACKEND}/api/v1/work-orders`, {
     headers: trustedHeaders(admin, "/api/v1/work-orders")
   });

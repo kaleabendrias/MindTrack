@@ -17,6 +17,7 @@ export function createAuthRoutes(authController, authenticate) {
     validateRequest(validateRefreshRequest),
     asyncHandler(authController.refresh)
   );
+  router.get("/security-questions", asyncHandler(authController.securityQuestions));
   router.post(
     "/recover-password",
     recoveryRateLimiter,

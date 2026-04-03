@@ -31,6 +31,11 @@ export async function logout() {
   }
 }
 
+export async function fetchSecurityQuestions(username) {
+  const response = await apiRequest(`/auth/security-questions?username=${encodeURIComponent(username)}`, { method: "GET" });
+  return response.data;
+}
+
 export async function recoverPassword({ username, question, answer, newPassword }) {
   const response = await apiRequest("/auth/recover-password", {
     method: "POST",

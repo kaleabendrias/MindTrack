@@ -5,6 +5,7 @@ Fully offline outpatient mental-health package with a React frontend, Node/Expre
 ## Single startup command
 
 ```bash
+./generate-secrets.sh   # first time only — creates .env with random secrets
 docker compose up --build
 ```
 
@@ -53,29 +54,44 @@ npm run preview
 - Application services: `apps/backend/src/application/services`
 - Repositories/persistence: `apps/backend/src/infrastructure/repositories`, `apps/backend/src/infrastructure/persistence`
 
-## Bootstrap flow and default credentials
+## First-time setup
+
+Before the first `docker compose up --build`, generate per-install secrets:
+
+```bash
+./generate-secrets.sh
+```
+
+This creates a `.env` file (git-ignored) with cryptographically random secrets and initial seed passwords. No external services are required — only `openssl` and `/dev/urandom`.
+
+All seeded user passwords are marked for mandatory rotation on first login.
+
+## Bootstrap flow
 
 `mongo-seed` runs automatically after MongoDB is healthy and before backend startup.
 
-Seeded users:
+Seeded usernames: `administrator`, `clinician`, `client`
 
-- Administrator
-  - username: `administrator`
-  - password: `AdminPasscode2026`
-- Clinician
-  - username: `clinician`
-  - password: `ClinicianPass2026`
-- Client
-  - username: `client`
-  - password: `ClientPasscode2026`
+Passwords are set from the `.env` file generated above. Operators must rotate all passwords after first login.
 
 Default seeded clinician identifier for administrator client assignment:
 
 - `0000000000000000000000b1` (`clinician`)
 
+## TLS / HTTPS for on-prem deployment
+
+Session cookies are set with `Secure: true` by default, which requires HTTPS. For production on-prem deployment:
+
+1. Place a TLS-terminating reverse proxy (e.g., Nginx with a self-signed or CA-issued certificate) in front of the backend on port 443
+2. Configure the frontend Nginx to serve over HTTPS or proxy through the same TLS terminator
+3. All LAN clients access the system via `https://` URLs
+
+For **localhost-only development**, set `COOKIE_SECURE=false` in `.env` to allow plain HTTP cookies. This is already set in the test harness (`run_tests.sh`).
+
 ## Security model
 
 - Access and refresh tokens are issued server-side and stored in HTTP-only cookies for browser use
+- Session cookies use `Secure: true` by default (requires HTTPS); set `COOKIE_SECURE=false` only for localhost development
 - Browser-visible auth state is memory-only; no access token, refresh token, or signing secret is stored in local storage
 - Protected authenticated requests use active HMAC request signing with:
   - timestamp

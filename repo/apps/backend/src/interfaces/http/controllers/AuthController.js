@@ -58,6 +58,11 @@ export class AuthController {
     res.status(200).json({ data: { success: true } });
   };
 
+  securityQuestions = async (req, res) => {
+    const data = await this.authService.getSecurityQuestions(req.query.username);
+    res.status(200).json({ data });
+  };
+
   recoverPassword = async (req, res) => {
     await this.authService.recoverPasswordWithQuestion(req.body);
     res.status(200).json({ data: { success: true } });

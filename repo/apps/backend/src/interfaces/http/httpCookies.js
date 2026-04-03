@@ -10,11 +10,19 @@ export function parseCookies(req) {
   }, {});
 }
 
+function isSecureCookieEnabled() {
+  const value = process.env.COOKIE_SECURE;
+  if (value === "false" || value === "0") {
+    return false;
+  }
+  return true;
+}
+
 export function setSessionCookies(res, { accessToken, refreshToken }) {
   const base = {
     httpOnly: true,
     sameSite: "strict",
-    secure: false,
+    secure: isSecureCookieEnabled(),
     path: "/"
   };
 

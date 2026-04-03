@@ -98,15 +98,21 @@ export function App() {
     <AppShell
       currentUser={auth.user}
       onLogout={async () => {
-        await logout();
-        setAuth(null);
-        setSelfContext(null);
-        setClients([]);
-        setTrendingTerms([]);
-        setProfileFields(null);
-        setError("");
-        setMessage("");
-        navigate("/login", { replace: true });
+        try {
+          await logout();
+        } catch (_err) {
+          // Server-side logout may fail (network, expired session, etc.).
+          // Local state MUST clear regardless.
+        } finally {
+          setAuth(null);
+          setSelfContext(null);
+          setClients([]);
+          setTrendingTerms([]);
+          setProfileFields(null);
+          setError("");
+          setMessage("");
+          navigate("/login", { replace: true });
+        }
       }}
     >
       {error ? <p className="error-banner">{error}</p> : null}

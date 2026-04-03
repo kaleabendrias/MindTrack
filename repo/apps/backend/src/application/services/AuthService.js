@@ -269,6 +269,17 @@ export class AuthService {
     });
   }
 
+  async getSecurityQuestions(username) {
+    const normalizedUsername = User.normalizeUsername(username);
+    const user = await this.userRepository.findByUsername(normalizedUsername);
+    if (!user) {
+      throw new AppError("user not found", 404, "USER_NOT_FOUND");
+    }
+    return (user.securityQuestions || []).map((entry) => ({
+      question: entry.question
+    }));
+  }
+
   async recoverPasswordWithQuestion({ username, question, answer, newPassword }) {
     const normalizedUsername = User.normalizeUsername(username);
     const user = await this.userRepository.findByUsername(normalizedUsername);
