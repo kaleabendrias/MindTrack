@@ -74,6 +74,17 @@ export class MindTrackController {
     res.status(data.statusCode).json({ data: data.body, idempotentReplay: data.idempotentReplay });
   };
 
+  getAttachment = async (req, res) => {
+    const { buffer, contentType, fileName } = await this.mindTrackService.getAttachment({
+      actor: req.user,
+      entryId: req.params.entryId,
+      fingerprint: req.params.fingerprint
+    });
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+    res.send(buffer);
+  };
+
   search = async (req, res) => {
     const data = await this.mindTrackService.searchEntries({
       actor: req.user,

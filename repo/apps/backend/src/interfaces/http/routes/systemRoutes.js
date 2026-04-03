@@ -20,6 +20,21 @@ export function createSystemRoutes(controller) {
     asyncHandler(controller.updateProfileFields)
   );
   router.post(
+    "/profile-fields/custom",
+    requirePermission(permissions.userManage),
+    asyncHandler(controller.addCustomProfileField)
+  );
+  router.patch(
+    "/profile-fields/custom/:key",
+    requirePermission(permissions.userManage),
+    asyncHandler(controller.updateCustomProfileField)
+  );
+  router.delete(
+    "/profile-fields/custom/:key",
+    requirePermission(permissions.userManage),
+    asyncHandler(controller.deleteCustomProfileField)
+  );
+  router.post(
     "/backup-run",
     requirePermission(permissions.auditRead),
     validateRequest(validateBackupRun),

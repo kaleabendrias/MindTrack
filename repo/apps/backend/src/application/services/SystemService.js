@@ -143,7 +143,10 @@ export class SystemService {
 
   async getProfileFields() {
     const settings = await this.systemRepository.getOrCreateSettings();
-    return settings.profileFields;
+    return {
+      ...settings.profileFields,
+      customProfileFields: settings.customProfileFields || []
+    };
   }
 
   async updateProfileFields({ actor, profileFields, reason }) {
@@ -166,7 +169,123 @@ export class SystemService {
       after: updated.profileFields
     });
 
-    return updated.profileFields;
+    return {
+      ...updated.profileFields,
+      customProfileFields: updated.customProfileFields || []
+    };
+  }
+
+  async addCustomProfileField({ actor, field, reason }) {
+    const settings = await this.systemRepository.getOrCreateSettings();
+    const existing = (settings.customProfileFields || []);
+    if (existing.some((f) => f.key === field.key)) {
+      throw new AppError("custom profile field key already exists", 409, "DUPLICATE_FIELD_KEY");
+    }
+
+    const validTypes = ["text", "number", "date", "boolean", "select"];
+    if (!validTypes.includes(field.fieldType)) {
+      throw new AppError("invalid field type", 400, "INVALID_REQUEST");
+    }
+
+    const newField = {
+      key: String(field.key).trim().toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+      label: String(field.label).trim(),
+      fieldType: field.fieldType,
+      options: field.fieldType === "select" ? (field.options || []).map(String) : [],
+      required: Boolean(field.required),
+      visibleTo: Array.isArray(field.visibleTo)
+        ? field.visibleTo.filter((r) => ["administrator", "clinician", "client"].includes(r))
+        : ["administrator", "clinician", "client"],
+      createdAt: new Date()
+    };
+
+    const updatedFields = [...existing, newField];
+    const updated = await this.systemRepository.updateSettings({ customProfileFields: updatedFields });
+
+    await this.auditService.logAction({
+      actorUserId: actor.id,
+      action: "create",
+      entityType: "custom_profile_field",
+      entityId: newField.key,
+      reason: reason || "custom profile field created",
+      before: null,
+      after: newField
+    });
+
+    return {
+      ...updated.profileFields,
+      customProfileFields: updated.customProfileFields || []
+    };
+  }
+
+  async updateCustomProfileField({ actor, key, updates, reason }) {
+    const settings = await this.systemRepository.getOrCreateSettings();
+    const fields = [...(settings.customProfileFields || [])];
+    const index = fields.findIndex((f) => f.key === key);
+    if (index === -1) {
+      throw new AppError("custom profile field not found", 404, "FIELD_NOT_FOUND");
+    }
+
+    const before = { ...fields[index] };
+    if (updates.label !== undefined) {
+      fields[index] = { ...fields[index], label: String(updates.label).trim() };
+    }
+    if (updates.required !== undefined) {
+      fields[index] = { ...fields[index], required: Boolean(updates.required) };
+    }
+    if (updates.visibleTo !== undefined) {
+      fields[index] = {
+        ...fields[index],
+        visibleTo: updates.visibleTo.filter((r) => ["administrator", "clinician", "client"].includes(r))
+      };
+    }
+    if (updates.options !== undefined && fields[index].fieldType === "select") {
+      fields[index] = { ...fields[index], options: updates.options.map(String) };
+    }
+
+    const updated = await this.systemRepository.updateSettings({ customProfileFields: fields });
+
+    await this.auditService.logAction({
+      actorUserId: actor.id,
+      action: "update",
+      entityType: "custom_profile_field",
+      entityId: key,
+      reason: reason || "custom profile field updated",
+      before,
+      after: fields[index]
+    });
+
+    return {
+      ...updated.profileFields,
+      customProfileFields: updated.customProfileFields || []
+    };
+  }
+
+  async deleteCustomProfileField({ actor, key, reason }) {
+    const settings = await this.systemRepository.getOrCreateSettings();
+    const fields = [...(settings.customProfileFields || [])];
+    const index = fields.findIndex((f) => f.key === key);
+    if (index === -1) {
+      throw new AppError("custom profile field not found", 404, "FIELD_NOT_FOUND");
+    }
+
+    const removed = fields.splice(index, 1)[0];
+    const updated = await this.systemRepository.updateSettings({ customProfileFields: fields });
+
+    await this.auditService.logAction({
+      actorUserId: actor.id,
+      action: "delete",
+      entityType: "custom_profile_field",
+      entityId: key,
+      reason: reason || "custom profile field deleted",
+      before: removed,
+      after: null
+    });
+
+    return {
+      ...updated.profileFields,
+      customProfileFields: updated.customProfileFields || []
+    };
   }
 
   async securityFlags(userId) {

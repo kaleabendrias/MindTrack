@@ -24,7 +24,7 @@ function validateAttachments(attachments) {
 
   for (const attachment of attachments) {
     requireObject(attachment, "attachment");
-    enforceAllowedKeys(attachment, ["name", "type", "sizeBytes", "fingerprint"], "attachment");
+    enforceAllowedKeys(attachment, ["name", "type", "sizeBytes", "fingerprint", "data"], "attachment");
     requireNonEmptyString(attachment.name, "attachment name", 255);
     requireNonEmptyString(attachment.type, "attachment type", 120);
     requireNonEmptyString(attachment.fingerprint, "attachment fingerprint", 300);
@@ -36,7 +36,7 @@ function validateAttachments(attachments) {
 
 export function validateCreateClient(req) {
   requireObject(req.body, "body");
-  enforceAllowedKeys(req.body, ["name", "dob", "phone", "address", "tags", "channel", "reason", "primaryClinicianId"], "body");
+  enforceAllowedKeys(req.body, ["name", "dob", "phone", "address", "tags", "channel", "reason", "primaryClinicianId", "customFields"], "body");
   requireNonEmptyString(req.body.name, "name", 120);
   requireNonEmptyString(req.body.dob, "dob", 40);
   requireNonEmptyString(req.body.phone, "phone", 40);
@@ -51,7 +51,7 @@ export function validateCreateClient(req) {
 
 export function validateUpdateClient(req) {
   requireObject(req.body, "body");
-  enforceAllowedKeys(req.body, ["phone", "address", "tags", "channel", "reason"], "body");
+  enforceAllowedKeys(req.body, ["phone", "address", "tags", "channel", "reason", "customFields"], "body");
   if (req.body.channel) {
     requireEnum(req.body.channel, "channel", ["in_person", "telehealth", "phone"]);
   }

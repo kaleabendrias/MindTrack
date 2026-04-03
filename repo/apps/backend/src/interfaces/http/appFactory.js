@@ -5,6 +5,7 @@ import morgan from "morgan";
 import { AuthService } from "../../application/services/AuthService.js";
 import { AuditService } from "../../application/services/AuditService.js";
 import { IdempotencyService } from "../../application/services/IdempotencyService.js";
+import { AttachmentStorageService } from "../../application/services/AttachmentStorageService.js";
 import { MindTrackService } from "../../application/services/MindTrackService.js";
 import { SecurityMonitoringService } from "../../application/services/SecurityMonitoringService.js";
 import { SystemService } from "../../application/services/SystemService.js";
@@ -56,11 +57,13 @@ export function createApp() {
     auditService
   });
   const workOrderService = new WorkOrderService(workOrderRepository, auditService);
+  const attachmentStorageService = new AttachmentStorageService();
   const mindTrackService = new MindTrackService({
     mindTrackRepository,
     auditService,
     idempotencyService,
-    userRepository
+    userRepository,
+    attachmentStorageService
   });
   const securityMonitoringService = new SecurityMonitoringService(
     securityFlagRepository,
@@ -103,7 +106,7 @@ export function createApp() {
   app.use(helmet());
   app.use(cors());
   app.use(safeLogger);
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "50mb" }));
 
   app.use(createHealthRoutes());
   app.use("/api/v1/auth", createAuthRoutes(authController, authenticate));

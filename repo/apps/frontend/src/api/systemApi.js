@@ -30,3 +30,27 @@ export async function updateProfileFields(profileFields, reason) {
   });
   return response.data;
 }
+
+export async function addCustomProfileField(field, reason) {
+  const response = await apiRequest("/system/profile-fields/custom", {
+    method: "POST",
+    body: JSON.stringify({ field, reason })
+  });
+  return response.data;
+}
+
+export async function updateCustomProfileField(key, updates, reason) {
+  const response = await apiRequest(`/system/profile-fields/custom/${encodeURIComponent(key)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ updates, reason })
+  });
+  return response.data;
+}
+
+export async function deleteCustomProfileField(key, reason) {
+  const response = await apiRequest(`/system/profile-fields/custom/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ reason })
+  });
+  return response.data;
+}

@@ -5,7 +5,8 @@ const attachmentSchema = new mongoose.Schema(
     name: { type: String, required: true },
     type: { type: String, required: true },
     sizeBytes: { type: Number, required: true },
-    fingerprint: { type: String, required: true }
+    fingerprint: { type: String, required: true },
+    storagePath: { type: String, default: null }
   },
   { _id: false }
 );

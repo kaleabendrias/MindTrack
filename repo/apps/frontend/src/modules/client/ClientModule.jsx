@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { createEntry, fetchNearbyFacilities } from "../../api/mindTrackApi.js";
+import { CustomFieldsRenderer } from "../../shared/ui/CustomFieldsRenderer.jsx";
 import { TimelineItem } from "../../shared/ui/TimelineItem.jsx";
+import { displayPii, hasPiiViewPermission, maskAddress, maskPhone } from "../../shared/utils/piiUtils.js";
 
-export function ClientModule({ selfContext, onRefresh, profileFields }) {
+export function ClientModule({ selfContext, onRefresh, profileFields, currentUser }) {
   const [radius, setRadius] = useState(25);
   const [nearby, setNearby] = useState([]);
   const [nearbyView, setNearbyView] = useState("list");
@@ -25,16 +27,25 @@ export function ClientModule({ selfContext, onRefresh, profileFields }) {
     return <section className="panel"><p>Loading your care context...</p></section>;
   }
 
-  const { client, upcomingFollowUp, timeline } = selfContext;
+  const { client, upcomingFollowUp, timeline: rawTimeline } = selfContext;
+  const timeline = rawTimeline.filter(
+    (entry) => entry.entryType === "assessment" || entry.entryType === "follow_up"
+  );
 
   return (
     <section className="role-layout">
       <div className="panel">
         <h2>My Care Plan</h2>
         <p><strong>Name:</strong> {client.name}</p>
-        {profileFields?.phone ? <p><strong>Phone:</strong> {client.phone}</p> : null}
-        {profileFields?.address ? <p><strong>Address:</strong> {client.address}</p> : null}
+        {profileFields?.phone ? <p><strong>Phone:</strong> {displayPii(client.phone, hasPiiViewPermission(currentUser), maskPhone)}</p> : null}
+        {profileFields?.address ? <p><strong>Address:</strong> {displayPii(client.address, hasPiiViewPermission(currentUser), maskAddress)}</p> : null}
         {profileFields?.piiPolicyVisible ? <p className="hint">PII is masked by default unless explicit permission is granted.</p> : null}
+        <CustomFieldsRenderer
+          fields={profileFields?.customProfileFields}
+          role="client"
+          values={client.customFields}
+          readOnly
+        />
 
         <h3>Upcoming Follow-up</h3>
         {upcomingFollowUp ? (

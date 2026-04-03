@@ -34,6 +34,7 @@ export const mindTrackClientSchema = new mongoose.Schema(
     retentionUntil: { type: Date, required: true },
     mergedIntoClientId: { type: String, default: null },
     mergedAt: { type: Date, default: null },
+    customFields: { type: mongoose.Schema.Types.Mixed, default: {} },
     createdBy: { type: String, required: true },
     createdAt: { type: Date, required: true },
     updatedAt: { type: Date, required: true }

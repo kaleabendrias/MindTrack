@@ -27,6 +27,34 @@ export class SystemController {
     res.status(200).json({ data });
   };
 
+  addCustomProfileField = async (req, res) => {
+    const data = await this.systemService.addCustomProfileField({
+      actor: req.user,
+      field: req.body.field,
+      reason: req.body.reason
+    });
+    res.status(201).json({ data });
+  };
+
+  updateCustomProfileField = async (req, res) => {
+    const data = await this.systemService.updateCustomProfileField({
+      actor: req.user,
+      key: req.params.key,
+      updates: req.body.updates,
+      reason: req.body.reason
+    });
+    res.status(200).json({ data });
+  };
+
+  deleteCustomProfileField = async (req, res) => {
+    const data = await this.systemService.deleteCustomProfileField({
+      actor: req.user,
+      key: req.params.key,
+      reason: req.body.reason
+    });
+    res.status(200).json({ data });
+  };
+
   runBackupNow = async (req, res) => {
     const data = await this.systemService.runBackupNow({
       actor: req.user,

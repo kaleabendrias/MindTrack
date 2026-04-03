@@ -30,3 +30,11 @@ export async function logout() {
     clearSessionState();
   }
 }
+
+export async function recoverPassword({ username, question, answer, newPassword }) {
+  const response = await apiRequest("/auth/recover-password", {
+    method: "POST",
+    body: JSON.stringify({ username, question, answer, newPassword })
+  });
+  return response.data;
+}

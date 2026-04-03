@@ -9,7 +9,9 @@ import {
   updateClientProfile
 } from "../../api/mindTrackApi.js";
 import { AttachmentUploader } from "../../shared/ui/AttachmentUploader.jsx";
+import { CustomFieldsRenderer } from "../../shared/ui/CustomFieldsRenderer.jsx";
 import { TimelineItem } from "../../shared/ui/TimelineItem.jsx";
+import { displayPii, hasPiiViewPermission, maskAddress, maskPhone } from "../../shared/utils/piiUtils.js";
 
 const DEFAULT_FORM = {
   clientId: "",
@@ -27,7 +29,8 @@ const EMPTY_CLIENT_FORM = {
   phone: "",
   address: "",
   channel: "in_person",
-  tags: ""
+  tags: "",
+  customFields: {}
 };
 
 function validate(form) {
@@ -44,7 +47,7 @@ function validate(form) {
   return errors;
 }
 
-export function ClinicianModule({ clients, profileFields, onClientCreated }) {
+export function ClinicianModule({ clients, profileFields, onClientCreated, currentUser }) {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
   const [timeline, setTimeline] = useState([]);
@@ -212,6 +215,7 @@ export function ClinicianModule({ clients, profileFields, onClientCreated }) {
                   await createClient({
                     ...clientForm,
                     tags: clientForm.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+                    customFields: clientForm.customFields,
                     reason: "Clinician client registration"
                   });
                   setClientForm(EMPTY_CLIENT_FORM);
@@ -230,6 +234,12 @@ export function ClinicianModule({ clients, profileFields, onClientCreated }) {
               <label>Phone<input value={clientForm.phone} onChange={(event) => setClientForm((prev) => ({ ...prev, phone: event.target.value }))} /></label>
               <label>Address<input value={clientForm.address} onChange={(event) => setClientForm((prev) => ({ ...prev, address: event.target.value }))} /></label>
               <label>Tags<input value={clientForm.tags} onChange={(event) => setClientForm((prev) => ({ ...prev, tags: event.target.value }))} placeholder="anxiety, sleep" /></label>
+              <CustomFieldsRenderer
+                fields={profileFields?.customProfileFields}
+                role="clinician"
+                values={clientForm.customFields}
+                onChange={(customFields) => setClientForm((prev) => ({ ...prev, customFields }))}
+              />
               <button type="submit">Save client</button>
               {clientMessage ? <p className="inline-message">{clientMessage}</p> : null}
             </form>
@@ -242,8 +252,16 @@ export function ClinicianModule({ clients, profileFields, onClientCreated }) {
         <h3>
           Timeline {selectedClient ? `for ${selectedClient.name}` : ""}
         </h3>
-        {selectedClient && profileFields?.phone ? <p>Phone: {selectedClient.phone}</p> : null}
-        {selectedClient && profileFields?.address ? <p>Address: {selectedClient.address}</p> : null}
+        {selectedClient && profileFields?.phone ? <p>Phone: {displayPii(selectedClient.phone, hasPiiViewPermission(currentUser), maskPhone)}</p> : null}
+        {selectedClient && profileFields?.address ? <p>Address: {displayPii(selectedClient.address, hasPiiViewPermission(currentUser), maskAddress)}</p> : null}
+        {selectedClient ? (
+          <CustomFieldsRenderer
+            fields={profileFields?.customProfileFields}
+            role="clinician"
+            values={selectedClient.customFields}
+            readOnly
+          />
+        ) : null}
         {selectedClient ? (
           <div style={{ marginBottom: "0.75rem" }}>
             {editingClient === selectedClient._id ? (

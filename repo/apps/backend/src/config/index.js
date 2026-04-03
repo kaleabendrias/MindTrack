@@ -30,6 +30,7 @@ export const config = {
   requestSigningSecret: requireSecureValue("REQUEST_SIGNING_SECRET"),
   dataEncryptionKey: requireSecureValue("DATA_ENCRYPTION_KEY"),
   backupDirectory: process.env.BACKUP_DIRECTORY || "/var/lib/offline-system/backups",
+  attachmentDirectory: process.env.ATTACHMENT_DIRECTORY || "/var/lib/offline-system/attachments",
   accessTokenTtlSeconds: 30 * 60,
   refreshTokenTtlSeconds: 7 * 24 * 60 * 60,
   accountLockMinutes: 15,

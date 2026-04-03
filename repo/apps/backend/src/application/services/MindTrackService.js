@@ -64,11 +64,12 @@ function validateAttachments(attachments) {
 }
 
 export class MindTrackService {
-  constructor({ mindTrackRepository, auditService, idempotencyService, userRepository }) {
+  constructor({ mindTrackRepository, auditService, idempotencyService, userRepository, attachmentStorageService }) {
     this.mindTrackRepository = mindTrackRepository;
     this.auditService = auditService;
     this.idempotencyService = idempotencyService;
     this.userRepository = userRepository;
+    this.attachmentStorageService = attachmentStorageService;
   }
 
   canViewPii(actor) {
@@ -201,6 +202,7 @@ export class MindTrackService {
       channel: payload.channel || "in_person",
       coordinate: centroid ? { lat: centroid.lat, lon: centroid.lon, source: "zip_centroid" } : null,
       primaryClinicianId,
+      customFields: payload.customFields || {},
       legalHold: false,
       retentionUntil: retentionDate(now),
       mergedIntoClientId: null,
@@ -252,6 +254,9 @@ export class MindTrackService {
     }
     if (payload.channel !== undefined) {
       updates.channel = payload.channel;
+    }
+    if (payload.customFields !== undefined) {
+      updates.customFields = { ...(client.customFields || {}), ...payload.customFields };
     }
 
     const updated = await this.mindTrackRepository.updateClient(client._id, updates);
@@ -343,8 +348,23 @@ export class MindTrackService {
     }
 
     const now = new Date();
+    const entryId = crypto.randomUUID().replaceAll("-", "");
+
+    let storedAttachments = [];
+    if (this.attachmentStorageService && (payload.attachments || []).length) {
+      storedAttachments = await this.attachmentStorageService.store(entryId, payload.attachments);
+    } else {
+      storedAttachments = (payload.attachments || []).map((a) => ({
+        name: a.name,
+        type: a.type,
+        sizeBytes: a.sizeBytes,
+        fingerprint: a.fingerprint,
+        storagePath: null
+      }));
+    }
+
     const created = await this.mindTrackRepository.createEntry({
-      _id: crypto.randomUUID().replaceAll("-", ""),
+      _id: entryId,
       clientId: payload.clientId,
       clinicianId: actor.role === "client" ? client.primaryClinicianId : actor.id,
       entryType: payload.entryType,
@@ -354,7 +374,7 @@ export class MindTrackService {
       channel: actor.role === "client" ? "self_service" : payload.channel || "in_person",
       status: actor.role === "client" ? "signed" : payload.status || "draft",
       occurredAt: payload.occurredAt ? new Date(payload.occurredAt) : now,
-      attachments: payload.attachments || [],
+      attachments: storedAttachments,
       amendedFromEntryId: null,
       deletedAt: null,
       deletedReason: null,
@@ -380,7 +400,13 @@ export class MindTrackService {
 
   async listTimeline({ actor, clientId }) {
     const client = await this.resolveClientAccess(actor, clientId);
-    return this.mindTrackRepository.listTimeline({ clientId: client._id });
+    const entries = await this.mindTrackRepository.listTimeline({ clientId: client._id });
+    if (actor.role === "client") {
+      return entries.filter(
+        (entry) => entry.entryType === "assessment" || entry.entryType === "follow_up"
+      );
+    }
+    return entries;
   }
 
   async signEntry({ actor, entryId, expectedVersion, idempotencyKey, reason }) {
@@ -491,6 +517,29 @@ export class MindTrackService {
         return { statusCode: 200, body: updated };
       }
     });
+  }
+
+  async getAttachment({ actor, entryId, fingerprint }) {
+    const { entry } = await this.resolveEntryAccess(actor, entryId);
+    if (actor.role === "client" && entry.entryType === "counseling_note") {
+      throw new AppError("forbidden", 403, "FORBIDDEN");
+    }
+    const attachment = (entry.attachments || []).find((a) => a.fingerprint === fingerprint);
+    if (!attachment) {
+      throw new AppError("attachment not found", 404, "ATTACHMENT_NOT_FOUND");
+    }
+    if (!attachment.storagePath) {
+      throw new AppError("attachment file not stored", 404, "ATTACHMENT_NOT_STORED");
+    }
+    if (!this.attachmentStorageService) {
+      throw new AppError("attachment storage not available", 500, "STORAGE_UNAVAILABLE");
+    }
+    const fileExists = await this.attachmentStorageService.exists(attachment.storagePath);
+    if (!fileExists) {
+      throw new AppError("attachment file missing from storage", 404, "ATTACHMENT_FILE_MISSING");
+    }
+    const buffer = await this.attachmentStorageService.retrieve(attachment.storagePath);
+    return { buffer, contentType: attachment.type, fileName: attachment.name };
   }
 
   async searchEntries({ actor, query, from, to, entryType, tags, sort }) {
@@ -609,7 +658,10 @@ export class MindTrackService {
 
   async selfContext(actor) {
     const client = await this.resolveClientAccess(actor, actor.mindTrackClientId);
-    const timeline = await this.mindTrackRepository.listTimeline({ clientId: client._id });
+    const allEntries = await this.mindTrackRepository.listTimeline({ clientId: client._id });
+    const timeline = allEntries.filter(
+      (entry) => entry.entryType === "assessment" || entry.entryType === "follow_up"
+    );
     const upcomingFollowUp = timeline
       .filter((entry) => entry.entryType === "follow_up" && new Date(entry.occurredAt) > new Date())
       .sort((a, b) => new Date(a.occurredAt) - new Date(b.occurredAt))[0] || null;

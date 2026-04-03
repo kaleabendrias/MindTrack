@@ -9,6 +9,18 @@ function toLabel(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(",")[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export function AttachmentUploader({ items, onChange }) {
   const [error, setError] = useState("");
   const inputRef = useRef(null);
@@ -43,12 +55,14 @@ export function AttachmentUploader({ items, onChange }) {
         return;
       }
 
+      const data = await readFileAsBase64(file);
       existingFingerprints.add(fingerprint);
       appended.push({
         name: file.name,
         type: file.type,
         sizeBytes: file.size,
-        fingerprint
+        fingerprint,
+        data
       });
     }
 

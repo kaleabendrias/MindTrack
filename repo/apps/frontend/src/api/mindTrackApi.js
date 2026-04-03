@@ -111,6 +111,10 @@ export async function updateClientProfile(clientId, payload) {
   return response.data;
 }
 
+export function attachmentDownloadUrl(entryId, fingerprint) {
+  return `/api/v1/mindtrack/entries/${entryId}/attachments/${encodeURIComponent(fingerprint)}`;
+}
+
 export async function updateClientGovernance(clientId, payload) {
   const response = await apiRequest(`/mindtrack/clients/${clientId}/governance`, {
     method: "PATCH",

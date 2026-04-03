@@ -39,6 +39,7 @@ export function createMindTrackRoutes(controller) {
   );
 
   router.post("/entries", validateRequest(validateCreateEntry), asyncHandler(controller.createEntry));
+  router.get("/entries/:entryId/attachments/:fingerprint", asyncHandler(controller.getAttachment));
   router.post("/entries/:entryId/sign", validateRequest(validateCriticalWrite), asyncHandler(controller.signEntry));
   router.post("/entries/:entryId/amend", validateRequest(validateAmendEntry), asyncHandler(controller.amendEntry));
   router.post(
