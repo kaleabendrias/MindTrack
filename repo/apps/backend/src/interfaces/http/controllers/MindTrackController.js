@@ -63,6 +63,17 @@ export class MindTrackController {
     res.status(data.statusCode).json({ data: data.body, idempotentReplay: data.idempotentReplay });
   };
 
+  deleteEntry = async (req, res) => {
+    const data = await this.mindTrackService.deleteEntry({
+      actor: req.user,
+      entryId: req.params.entryId,
+      expectedVersion: req.body.expectedVersion,
+      idempotencyKey: req.get("x-idempotency-key"),
+      reason: req.body.reason
+    });
+    res.status(data.statusCode).json({ data: data.body, idempotentReplay: data.idempotentReplay });
+  };
+
   restoreEntry = async (req, res) => {
     const data = await this.mindTrackService.restoreEntry({
       actor: req.user,

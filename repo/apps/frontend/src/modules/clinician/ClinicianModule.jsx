@@ -3,6 +3,7 @@ import {
   amendEntry,
   createClient,
   createEntry,
+  deleteEntry,
   fetchTimeline,
   restoreEntry,
   signEntry,
@@ -60,6 +61,8 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
   const [editingClient, setEditingClient] = useState(null);
   const [editForm, setEditForm] = useState({ phone: "", address: "", tags: "" });
   const [editMessage, setEditMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [entryBusy, setEntryBusy] = useState({});
 
   const selectedClient = useMemo(
     () => clients.find((client) => client._id === form.clientId),
@@ -81,6 +84,7 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
 
   async function submit(event) {
     event.preventDefault();
+    if (busy) return;
     setMessage("");
 
     const nextErrors = validate(form);
@@ -89,6 +93,7 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
       return;
     }
 
+    setBusy(true);
     try {
       await createEntry({
         clientId: form.clientId,
@@ -109,6 +114,8 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
       setMessage("Entry saved.");
     } catch (error) {
       setMessage(error.message || "Unable to save entry.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -196,7 +203,7 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
             items={form.attachments}
             onChange={(attachments) => setForm((previous) => ({ ...previous, attachments }))}
           />
-          <button type="submit">Save entry</button>
+          <button type="submit" disabled={busy}>{busy ? "Saving..." : "Save entry"}</button>
         </form>
         {message ? <p className="inline-message">{message}</p> : null}
 
@@ -325,16 +332,20 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
                 <>
                   <button
                     type="button"
+                    disabled={entryBusy[entry._id]}
                     onClick={async () => {
+                      setEntryBusy((p) => ({ ...p, [entry._id]: true }));
                       try {
                         await signEntry(entry._id, entry.version, "Clinician sign");
                         await loadTimeline(form.clientId);
                       } catch (error) {
                         setMessage(error.message || "Unable to sign entry.");
+                      } finally {
+                        setEntryBusy((p) => ({ ...p, [entry._id]: false }));
                       }
                     }}
                   >
-                    Sign
+                    {entryBusy[entry._id] ? "..." : "Sign"}
                   </button>
                   <input
                     value={amendText[entry._id] || ""}
@@ -345,31 +356,59 @@ export function ClinicianModule({ clients, profileFields, onClientCreated, curre
                   />
                   <button
                     type="button"
+                    disabled={entryBusy[entry._id]}
                     onClick={async () => {
+                      setEntryBusy((p) => ({ ...p, [entry._id]: true }));
                       try {
                         const amendment = amendText[entry._id] || entry.body;
                         await amendEntry(entry._id, entry.version, amendment, "Clinician amend");
                         await loadTimeline(form.clientId);
                       } catch (error) {
                         setMessage(error.message || "Unable to amend entry.");
+                      } finally {
+                        setEntryBusy((p) => ({ ...p, [entry._id]: false }));
                       }
                     }}
                   >
                     Amend
                   </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await restoreEntry(entry._id, entry.version, "Clinician restore");
-                        await loadTimeline(form.clientId);
-                      } catch (error) {
-                        setMessage(error.message || "Unable to restore entry.");
-                      }
-                    }}
-                  >
-                    Restore
-                  </button>
+                  {entry.deletedAt ? (
+                    <button
+                      type="button"
+                      disabled={entryBusy[entry._id]}
+                      onClick={async () => {
+                        setEntryBusy((p) => ({ ...p, [entry._id]: true }));
+                        try {
+                          await restoreEntry(entry._id, entry.version, "Clinician restore");
+                          await loadTimeline(form.clientId);
+                        } catch (error) {
+                          setMessage(error.message || "Unable to restore entry.");
+                        } finally {
+                          setEntryBusy((p) => ({ ...p, [entry._id]: false }));
+                        }
+                      }}
+                    >
+                      Restore
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={entryBusy[entry._id]}
+                      onClick={async () => {
+                        setEntryBusy((p) => ({ ...p, [entry._id]: true }));
+                        try {
+                          await deleteEntry(entry._id, entry.version, "Clinician soft-delete");
+                          await loadTimeline(form.clientId);
+                        } catch (error) {
+                          setMessage(error.message || "Unable to delete entry.");
+                        } finally {
+                          setEntryBusy((p) => ({ ...p, [entry._id]: false }));
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
                 </>
               }
             />

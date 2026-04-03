@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { recoverPassword } from "../api/authApi.js";
+import { validatePassword } from "../shared/utils/passwordPolicy.js";
 
 export function LoginPage({ onLogin, error }) {
   const [username, setUsername] = useState("");
@@ -53,6 +54,11 @@ export function LoginPage({ onLogin, error }) {
             event.preventDefault();
             setRecoveryMessage("");
             setRecoveryError("");
+            const policyError = validatePassword(recovery.newPassword);
+            if (policyError) {
+              setRecoveryError(policyError);
+              return;
+            }
             try {
               await recoverPassword(recovery);
               setRecoveryMessage("Password reset successfully. You can now sign in.");

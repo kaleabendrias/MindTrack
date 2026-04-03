@@ -39,10 +39,11 @@ function decryptBuffer(encryptedJson) {
 }
 
 export class SystemService {
-  constructor(systemRepository, auditService, securityMonitoringService) {
+  constructor(systemRepository, auditService, securityMonitoringService, idempotencyService) {
     this.systemRepository = systemRepository;
     this.auditService = auditService;
     this.securityMonitoringService = securityMonitoringService;
+    this.idempotencyService = idempotencyService || null;
   }
 
   start() {
@@ -361,39 +362,59 @@ export class SystemService {
     return files.filter((f) => f.endsWith(".enc.json")).sort().reverse();
   }
 
-  async restoreFromBackup({ actor, filename, reason }) {
+  async restoreFromBackup({ actor, filename, reason, idempotencyKey }) {
     if (!filename) {
       throw new AppError("filename is required", 400, "INVALID_REQUEST");
     }
-
-    const fullPath = path.join(backupState.destination, filename);
-    let raw;
-    try {
-      raw = await fs.readFile(fullPath, "utf8");
-    } catch (_err) {
-      throw new AppError("backup file not found", 404, "BACKUP_NOT_FOUND");
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      throw new AppError("reason is required", 400, "INVALID_REQUEST");
     }
 
-    const decrypted = decryptBuffer(raw);
-    const snapshot = JSON.parse(decrypted.toString("utf8"));
+    const handler = async () => {
+      const fullPath = path.join(backupState.destination, filename);
+      let raw;
+      try {
+        raw = await fs.readFile(fullPath, "utf8");
+      } catch (_err) {
+        throw new AppError("backup file not found", 404, "BACKUP_NOT_FOUND");
+      }
 
-    await this.systemRepository.restoreCollections(snapshot);
+      const decrypted = decryptBuffer(raw);
+      const snapshot = JSON.parse(decrypted.toString("utf8"));
 
-    await this.auditService.logAction({
-      actorUserId: actor.id,
-      action: "create",
-      entityType: "backup_restore",
-      entityId: filename,
-      reason: reason || "backup restore",
-      before: null,
-      after: { filename, generatedAt: snapshot.generatedAt }
-    });
+      await this.systemRepository.restoreCollections(snapshot);
 
-    return {
-      success: true,
-      filename,
-      generatedAt: snapshot.generatedAt
+      await this.auditService.logAction({
+        actorUserId: actor.id,
+        action: "create",
+        entityType: "backup_restore",
+        entityId: filename,
+        reason: reason || "backup restore",
+        before: null,
+        after: { filename, generatedAt: snapshot.generatedAt }
+      });
+
+      return {
+        statusCode: 200,
+        body: {
+          success: true,
+          filename,
+          generatedAt: snapshot.generatedAt
+        }
+      };
     };
+
+    if (this.idempotencyService && idempotencyKey) {
+      return this.idempotencyService.execute({
+        key: idempotencyKey,
+        userId: actor.id,
+        action: `restore:${filename}`,
+        handler
+      });
+    }
+
+    const result = await handler();
+    return result;
   }
 
   async securityFlags(userId) {

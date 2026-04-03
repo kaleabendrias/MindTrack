@@ -400,7 +400,8 @@ export class MindTrackService {
 
   async listTimeline({ actor, clientId }) {
     const client = await this.resolveClientAccess(actor, clientId);
-    const entries = await this.mindTrackRepository.listTimeline({ clientId: client._id });
+    const includeDeleted = ["clinician", "administrator"].includes(actor.role);
+    const entries = await this.mindTrackRepository.listTimeline({ clientId: client._id }, { includeDeleted });
     if (actor.role === "client") {
       return entries.filter(
         (entry) => entry.entryType === "assessment" || entry.entryType === "follow_up"
@@ -482,6 +483,50 @@ export class MindTrackService {
     });
   }
 
+  async deleteEntry({ actor, entryId, expectedVersion, idempotencyKey, reason }) {
+    if (!["clinician", "administrator"].includes(actor.role)) {
+      throw new AppError("insufficient permissions", 403, "FORBIDDEN");
+    }
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      throw new AppError("deletion reason is required", 400, "INVALID_REQUEST");
+    }
+
+    return this.idempotencyService.execute({
+      key: idempotencyKey,
+      userId: actor.id,
+      action: `delete:${entryId}`,
+      handler: async () => {
+        const { entry, client } = await this.resolveEntryAccess(actor, entryId);
+        this.assertMutationAllowed(client, "client");
+        this.assertMutationAllowed(entry, "entry");
+
+        if (entry.deletedAt) {
+          throw new AppError("entry is already deleted", 409, "ALREADY_DELETED");
+        }
+
+        const updated = await this.mindTrackRepository.updateEntryWithVersion(entryId, expectedVersion, {
+          deletedAt: new Date(),
+          deletedReason: reason.trim(),
+          updatedAt: new Date()
+        });
+        if (!updated) {
+          throw new AppError("entry version conflict", 409, "VERSION_CONFLICT");
+        }
+
+        await this.auditService.logAction({
+          actorUserId: actor.id,
+          action: "delete",
+          entityType: "mindtrack_entry",
+          entityId: entryId,
+          reason,
+          before: entry,
+          after: updated
+        });
+        return { statusCode: 200, body: updated };
+      }
+    });
+  }
+
   async restoreEntry({ actor, entryId, expectedVersion, idempotencyKey, reason }) {
     if (!["clinician", "administrator"].includes(actor.role)) {
       throw new AppError("insufficient permissions", 403, "FORBIDDEN");
@@ -495,6 +540,10 @@ export class MindTrackService {
         const { entry, client } = await this.resolveEntryAccess(actor, entryId);
         this.assertMutationAllowed(client, "client");
         this.assertMutationAllowed(entry, "entry");
+
+        if (!entry.deletedAt) {
+          throw new AppError("entry is not deleted", 409, "NOT_DELETED");
+        }
 
         const updated = await this.mindTrackRepository.updateEntryWithVersion(entryId, expectedVersion, {
           deletedAt: null,
@@ -543,11 +592,16 @@ export class MindTrackService {
   }
 
   async searchEntries({ actor, query, from, to, entryType, tags, sort }) {
-    const accessFilter = actor.role === "administrator"
-      ? {}
-      : actor.role === "clinician"
-        ? { clinicianId: actor.id }
-        : { clientId: actor.mindTrackClientId };
+    let accessFilter;
+    if (actor.role === "administrator") {
+      accessFilter = {};
+    } else if (actor.role === "clinician") {
+      const assignedClients = await this.mindTrackRepository.listClients({ primaryClinicianId: actor.id });
+      const assignedClientIds = assignedClients.map((c) => c._id);
+      accessFilter = assignedClientIds.length ? { clientId: { $in: assignedClientIds } } : { clientId: null };
+    } else {
+      accessFilter = { clientId: actor.mindTrackClientId };
+    }
 
     const normalizedQuery = String(query || "").trim();
     const terms = tokenize(normalizedQuery);

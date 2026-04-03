@@ -10,6 +10,7 @@ import {
 } from "../../api/systemApi.js";
 import { adminResetPassword, fetchUsers } from "../../api/userApi.js";
 import { CustomFieldsRenderer } from "../../shared/ui/CustomFieldsRenderer.jsx";
+import { validatePassword } from "../../shared/utils/passwordPolicy.js";
 
 const EMPTY_FORM = {
   name: "",
@@ -44,6 +45,7 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
   const [resetMessage, setResetMessage] = useState("");
   const [newField, setNewField] = useState({ key: "", label: "", fieldType: "text", options: "", required: false, visibleTo: "administrator,clinician,client" });
   const [editingFieldKey, setEditingFieldKey] = useState(null);
+  const [busy, setBusy] = useState({});
   const [editFieldForm, setEditFieldForm] = useState({ label: "", required: false, visibleTo: "", options: "" });
 
   useEffect(() => {
@@ -148,18 +150,25 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
             ))}
             <button
               type="button"
-              disabled={!selectedDuplicate || !newClientId}
+              disabled={!selectedDuplicate || !newClientId || busy.merge}
               onClick={async () => {
-                await mergeClients({
-                  primaryClientId: newClientId,
-                  duplicateClientId: selectedDuplicate,
-                  reason: "Administrator duplicate merge"
-                });
-                setMessage("Merge request completed with audit trail.");
-                await onClientCreated();
+                setBusy((p) => ({ ...p, merge: true }));
+                try {
+                  await mergeClients({
+                    primaryClientId: newClientId,
+                    duplicateClientId: selectedDuplicate,
+                    reason: "Administrator duplicate merge"
+                  });
+                  setMessage("Merge request completed with audit trail.");
+                  await onClientCreated();
+                } catch (error) {
+                  setMessage(error.message);
+                } finally {
+                  setBusy((p) => ({ ...p, merge: false }));
+                }
               }}
             >
-              Merge Selected
+              {busy.merge ? "Merging..." : "Merge Selected"}
             </button>
           </div>
         ) : null}
@@ -316,18 +325,25 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
         <label>Retention until<input type="date" value={retentionUntil} onChange={(event) => setRetentionUntil(event.target.value)} /></label>
         <button
           type="button"
-          disabled={!selectedClientId}
+          disabled={!selectedClientId || busy.governance}
           onClick={async () => {
-            await updateClientGovernance(selectedClientId, {
-              legalHold,
-              retentionUntil,
-              reason: "Administrator governance update"
-            });
-            setMessage("Governance controls updated.");
-            await onClientCreated();
+            setBusy((p) => ({ ...p, governance: true }));
+            try {
+              await updateClientGovernance(selectedClientId, {
+                legalHold,
+                retentionUntil,
+                reason: "Administrator governance update"
+              });
+              setMessage("Governance controls updated.");
+              await onClientCreated();
+            } catch (error) {
+              setMessage(error.message);
+            } finally {
+              setBusy((p) => ({ ...p, governance: false }));
+            }
           }}
         >
-          Save Governance Controls
+          {busy.governance ? "Saving..." : "Save Governance Controls"}
         </button>
       </div>
 
@@ -338,6 +354,11 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
           setResetMessage("");
           if (!resetUserId || !resetPassword) {
             setResetMessage("Select a user and enter a new password.");
+            return;
+          }
+          const policyError = validatePassword(resetPassword);
+          if (policyError) {
+            setResetMessage(policyError);
             return;
           }
           try {
@@ -376,14 +397,22 @@ export function AdministratorModule({ clients, profileFields, onProfileFieldsUpd
             <p>Last run: {backupStatus.lastRunAt || "never"}</p>
             <button
               type="button"
+              disabled={busy.backup}
               onClick={async () => {
-                const result = await runBackupNow("Administrator backup execution");
-                setMessage(`Backup completed at ${result.lastRunAt}`);
-                const next = await fetchBackupStatus();
-                setBackupStatus(next);
+                setBusy((p) => ({ ...p, backup: true }));
+                try {
+                  const result = await runBackupNow("Administrator backup execution");
+                  setMessage(`Backup completed at ${result.lastRunAt}`);
+                  const next = await fetchBackupStatus();
+                  setBackupStatus(next);
+                } catch (error) {
+                  setMessage(error.message);
+                } finally {
+                  setBusy((p) => ({ ...p, backup: false }));
+                }
               }}
             >
-              Run Backup Now
+              {busy.backup ? "Running..." : "Run Backup Now"}
             </button>
           </>
         ) : (

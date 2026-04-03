@@ -42,6 +42,7 @@ export function createMindTrackRoutes(controller) {
   router.get("/entries/:entryId/attachments/:fingerprint", asyncHandler(controller.getAttachment));
   router.post("/entries/:entryId/sign", validateRequest(validateCriticalWrite), asyncHandler(controller.signEntry));
   router.post("/entries/:entryId/amend", validateRequest(validateAmendEntry), asyncHandler(controller.amendEntry));
+  router.post("/entries/:entryId/delete", validateRequest(validateCriticalWrite), asyncHandler(controller.deleteEntry));
   router.post(
     "/entries/:entryId/restore",
     validateRequest(validateCriticalWrite),

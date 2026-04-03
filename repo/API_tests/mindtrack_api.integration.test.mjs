@@ -421,6 +421,84 @@ test("clinician cannot access restore endpoint", async () => {
   assert.equal(res.status, 403);
 });
 
+test("backup restore idempotency: replayed request returns same result", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+
+  const backupBody = JSON.stringify({ reason: "pre-idempotent-restore backup" });
+  const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: backupBody }),
+    body: backupBody
+  });
+  const backupJson = await backupRes.json();
+  assert.equal(backupRes.status, 200);
+
+  const restoreBody = JSON.stringify({ filename: backupJson.data.file, reason: "idempotent restore test" });
+  const idemKey = crypto.randomUUID();
+
+  const firstRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody, idempotencyKey: idemKey }),
+    body: restoreBody
+  });
+  const firstJson = await firstRes.json();
+  assert.equal(firstRes.status, 200);
+  assert.equal(firstJson.data.success, true);
+  assert.equal(Boolean(firstJson.idempotentReplay), false);
+
+  const secondRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body: restoreBody, idempotencyKey: idemKey }),
+    body: restoreBody
+  });
+  const secondJson = await secondRes.json();
+  assert.equal(secondRes.status, 200);
+  assert.equal(Boolean(secondJson.idempotentReplay), true);
+});
+
+test("backup restore rejects missing reason", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const body = JSON.stringify({ filename: "any.enc.json" });
+  const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
+    body
+  });
+  assert.equal(res.status, 400);
+});
+
+test("clinician search returns all entries for assigned clients regardless of entry author", async () => {
+  const admin = await login("administrator", "AdminPasscode2026");
+  const clinician = await login("clinician", "ClinicianPass2026");
+
+  const adminEntryBody = JSON.stringify({
+    clientId: "cli001",
+    entryType: "assessment",
+    title: "Admin-authored entry for clinician client",
+    body: "This entry was created by admin for a clinician-assigned client.",
+    tags: ["admin-authored"],
+    reason: "admin creates entry for clinician client"
+  });
+  const adminCreateRes = await fetch(`${BASE}/api/v1/mindtrack/entries`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/mindtrack/entries", { method: "POST", body: adminEntryBody }),
+    body: adminEntryBody
+  });
+  assert.ok([201, 409].includes(adminCreateRes.status), "admin should create or be blocked by legal hold");
+
+  const searchRes = await fetch(
+    `${BASE}/api/v1/mindtrack/search?q=admin-authored&sort=newest`,
+    { headers: trustedHeaders(clinician, "/api/v1/mindtrack/search?q=admin-authored&sort=newest") }
+  );
+  const searchJson = await searchRes.json();
+  assert.equal(searchRes.status, 200);
+
+  if (adminCreateRes.status === 201) {
+    const found = searchJson.data.entries.some((e) => e.tags?.includes("admin-authored"));
+    assert.equal(found, true, "clinician should find admin-authored entries for their assigned clients");
+  }
+});
+
 test("behavior-based abnormal access rules persist metadata for rapid lookups and repeated backup attempts", async () => {
   const clinician = await login("clinician", "ClinicianPass2026");
   for (let index = 0; index < 8; index += 1) {

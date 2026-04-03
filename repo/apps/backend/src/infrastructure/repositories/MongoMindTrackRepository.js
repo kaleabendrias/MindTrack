@@ -95,8 +95,12 @@ export class MongoMindTrackRepository {
     return mapClient(merged);
   }
 
-  async listTimeline(filter) {
-    return MindTrackEntryModel.find({ deletedAt: null, ...filter })
+  async listTimeline(filter, options = {}) {
+    const query = { ...filter };
+    if (!options.includeDeleted) {
+      query.deletedAt = null;
+    }
+    return MindTrackEntryModel.find(query)
       .sort({ occurredAt: -1, updatedAt: -1 })
       .lean();
   }

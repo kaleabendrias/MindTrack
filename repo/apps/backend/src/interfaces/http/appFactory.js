@@ -70,7 +70,7 @@ export function createApp() {
     sessionRepository
   );
   const thirdPartyLoginService = new ThirdPartyLoginService();
-  const systemService = new SystemService(systemRepository, auditService, securityMonitoringService);
+  const systemService = new SystemService(systemRepository, auditService, securityMonitoringService, idempotencyService);
   systemService.start();
 
   const authController = new AuthController(authService, thirdPartyLoginService);

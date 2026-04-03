@@ -58,6 +58,15 @@ export async function amendEntry(entryId, expectedVersion, body, reason) {
   return response.data;
 }
 
+export async function deleteEntry(entryId, expectedVersion, reason) {
+  const response = await apiRequest(`/mindtrack/entries/${entryId}/delete`, {
+    method: "POST",
+    idempotencyKey: crypto.randomUUID(),
+    body: JSON.stringify({ expectedVersion, reason })
+  });
+  return response.data;
+}
+
 export async function restoreEntry(entryId, expectedVersion, reason) {
   const response = await apiRequest(`/mindtrack/entries/${entryId}/restore`, {
     method: "POST",

@@ -64,9 +64,10 @@ export class SystemController {
     const data = await this.systemService.restoreFromBackup({
       actor: req.user,
       filename: req.body.filename,
-      reason: req.body.reason
+      reason: req.body.reason,
+      idempotencyKey: req.get("x-idempotency-key")
     });
-    res.status(200).json({ data });
+    res.status(data.statusCode || 200).json({ data: data.body || data, idempotentReplay: data.idempotentReplay });
   };
 
   runBackupNow = async (req, res) => {
