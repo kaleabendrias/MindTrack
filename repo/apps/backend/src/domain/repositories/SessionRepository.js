@@ -14,4 +14,8 @@ export class SessionRepository {
   async revoke(_id) {
     throw new Error("revoke not implemented");
   }
+
+  async recordNonce(_id, _nonce, _ttlMs) {
+    throw new Error("recordNonce not implemented");
+  }
 }

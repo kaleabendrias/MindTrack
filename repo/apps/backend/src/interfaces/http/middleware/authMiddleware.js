@@ -31,6 +31,7 @@ export function createAuthenticateMiddleware({ sessionRepository, userRepository
         role: user.role,
         mindTrackClientId: user.mindTrackClientId || null,
         permissions: user.permissions,
+        mustRotatePassword: Boolean(user.mustRotatePassword),
         sessionId: session.id
       };
       req.session = session;
@@ -49,4 +50,32 @@ export function requirePermission(permission) {
     }
     next();
   };
+}
+
+// Routes that remain accessible while a user still has mustRotatePassword=true.
+// Everything else under /api/v1 is blocked until the user rotates.
+const PASSWORD_ROTATION_EXEMPT_PATHS = new Set([
+  "/api/v1/auth/session",
+  "/api/v1/auth/logout",
+  "/api/v1/auth/rotate-password",
+  "/api/v1/users/me/rotate-password"
+]);
+
+export function enforcePasswordRotation(req, _res, next) {
+  if (!req.user || !req.user.mustRotatePassword) {
+    next();
+    return;
+  }
+  const basePath = req.path || req.originalUrl?.split("?")[0] || "/";
+  if (PASSWORD_ROTATION_EXEMPT_PATHS.has(basePath)) {
+    next();
+    return;
+  }
+  next(
+    new AppError(
+      "password rotation required before continuing",
+      403,
+      "PASSWORD_ROTATION_REQUIRED"
+    )
+  );
 }

@@ -30,6 +30,11 @@ export const userSchema = new mongoose.Schema(
     encryptedAddress: { type: encryptedFieldSchema, default: null },
     failedLoginAttempts: { type: Number, default: 0 },
     lockedUntil: { type: Date, default: null },
+    // True for any account whose current password was provisioned by the
+    // operator (seed, admin reset, registration). The login flow blocks all
+    // protected access until the user rotates the password via the
+    // self-service rotate endpoint, which clears this flag.
+    mustRotatePassword: { type: Boolean, default: false },
     lastLoginAt: { type: Date, default: null },
     createdAt: { type: Date, required: true },
     updatedAt: { type: Date, required: true }

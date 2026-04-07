@@ -3,7 +3,13 @@ import { permissions } from "../../../domain/models/User.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
 import { validateRequest } from "../middleware/validationMiddleware.js";
-import { validateBackupRun, validateProfileFieldUpdate } from "../validation/systemValidators.js";
+import {
+  validateAddCustomProfileField,
+  validateBackupRun,
+  validateDeleteCustomProfileField,
+  validateProfileFieldUpdate,
+  validateUpdateCustomProfileField
+} from "../validation/systemValidators.js";
 
 export function createSystemRoutes(controller) {
   const router = Router();
@@ -22,16 +28,19 @@ export function createSystemRoutes(controller) {
   router.post(
     "/profile-fields/custom",
     requirePermission(permissions.userManage),
+    validateRequest(validateAddCustomProfileField),
     asyncHandler(controller.addCustomProfileField)
   );
   router.patch(
     "/profile-fields/custom/:key",
     requirePermission(permissions.userManage),
+    validateRequest(validateUpdateCustomProfileField),
     asyncHandler(controller.updateCustomProfileField)
   );
   router.delete(
     "/profile-fields/custom/:key",
     requirePermission(permissions.userManage),
+    validateRequest(validateDeleteCustomProfileField),
     asyncHandler(controller.deleteCustomProfileField)
   );
   router.post(

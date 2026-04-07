@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { recoveryRateLimiter } from "../middleware/rateLimitMiddleware.js";
+import { questionLookupRateLimiter, recoveryRateLimiter } from "../middleware/rateLimitMiddleware.js";
 import { validateRequest } from "../middleware/validationMiddleware.js";
 import {
   validateLoginRequest,
@@ -18,11 +18,13 @@ export function createAuthRoutes(authController, authenticate) {
     asyncHandler(authController.refresh)
   );
   // Rate limited to prevent username enumeration via repeated probing.
-  // The handler also returns a generic payload regardless of username
-  // validity (see AuthService.getSecurityQuestions).
+  // Uses a separate, more generous bucket from /recover-password since
+  // legitimate users may legitimately probe several times to remember
+  // which account they own. The handler also returns a generic payload
+  // regardless of username validity (see AuthService.getSecurityQuestions).
   router.get(
     "/security-questions",
-    recoveryRateLimiter,
+    questionLookupRateLimiter,
     asyncHandler(authController.securityQuestions)
   );
   router.post(
@@ -32,6 +34,11 @@ export function createAuthRoutes(authController, authenticate) {
     asyncHandler(authController.recoverPassword)
   );
   router.get("/session", authenticate, asyncHandler(authController.session));
+  router.post(
+    "/rotate-password",
+    authenticate,
+    asyncHandler(authController.rotatePassword)
+  );
   router.post("/third-party", asyncHandler(authController.thirdPartyLogin));
 
   return router;

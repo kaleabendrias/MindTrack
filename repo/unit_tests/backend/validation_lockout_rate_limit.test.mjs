@@ -2,7 +2,48 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AuthService } from "../../apps/backend/src/application/services/AuthService.js";
 import { enforcePasswordPolicy } from "../../apps/backend/src/application/security/passwordPolicy.js";
-import { sessionRateLimiter, recoveryRateLimiter } from "../../apps/backend/src/interfaces/http/middleware/rateLimitMiddleware.js";
+import {
+  createSessionRateLimiter,
+  createRecoveryRateLimiter
+} from "../../apps/backend/src/interfaces/http/middleware/rateLimitMiddleware.js";
+
+// Pure in-memory stub of MongoRateLimitRepository, used to exercise the
+// limiter logic without requiring a live Mongo connection.
+function makeStubRateLimitRepository() {
+  const buckets = new Map();
+  return {
+    async incrementAndCheck(key, scope, windowMs) {
+      const now = new Date();
+      const cutoff = now.getTime() - windowMs;
+      const existing = buckets.get(key);
+      if (
+        existing &&
+        existing.windowStart.getTime() >= cutoff &&
+        (!existing.lockedUntil || existing.lockedUntil <= now)
+      ) {
+        existing.count += 1;
+        existing.scope = scope;
+        return { ...existing, now };
+      }
+      const fresh = { windowStart: now, count: 1, lockedUntil: null, scope };
+      buckets.set(key, fresh);
+      return { ...fresh, now };
+    },
+    async setLockedUntil(key, scope, lockedUntil) {
+      const existing = buckets.get(key) || {
+        windowStart: new Date(),
+        count: 0,
+        scope
+      };
+      existing.lockedUntil = lockedUntil;
+      buckets.set(key, existing);
+    },
+    async getLockState(key) {
+      const existing = buckets.get(key);
+      return { lockedUntil: existing?.lockedUntil || null };
+    }
+  };
+}
 
 test("password policy rejects weak password", () => {
   assert.throws(() => enforcePasswordPolicy("short"));
@@ -37,50 +78,68 @@ test("account locks after failed login threshold", async () => {
   assert.ok(updates[0].lockedUntil instanceof Date);
 });
 
-test("session rate limiter blocks above 60 per minute", () => {
+test("session rate limiter blocks above 60 per minute", async () => {
+  const repository = makeStubRateLimitRepository();
+  const limiter = createSessionRateLimiter({ repository });
   const req = { user: { sessionId: "s-unit" } };
   const res = {};
   let blocked = false;
 
   for (let i = 0; i < 61; i += 1) {
-    sessionRateLimiter(req, res, (error) => {
-      if (error) {
-        blocked = true;
-      }
+    await new Promise((resolve) => {
+      limiter(req, res, (error) => {
+        if (error) {
+          blocked = true;
+        }
+        resolve();
+      });
     });
   }
 
   assert.equal(blocked, true);
 });
 
-test("recovery rate limiter blocks after 5 attempts from same IP", () => {
+test("recovery rate limiter blocks after 5 attempts from same IP", async () => {
+  const repository = makeStubRateLimitRepository();
+  const limiter = createRecoveryRateLimiter({ repository });
   let blocked = false;
   for (let i = 0; i < 8; i += 1) {
     const req = { ip: "192.168.99.99" };
     const res = {};
-    recoveryRateLimiter(req, res, (error) => {
-      if (error && error.statusCode === 429) {
-        blocked = true;
-      }
+    await new Promise((resolve) => {
+      limiter(req, res, (error) => {
+        if (error && error.statusCode === 429) {
+          blocked = true;
+        }
+        resolve();
+      });
     });
   }
   assert.equal(blocked, true, "should block after 5+ recovery attempts");
 });
 
-test("recovery rate limiter allows different IPs independently", () => {
+test("recovery rate limiter allows different IPs independently", async () => {
+  const repository = makeStubRateLimitRepository();
+  const limiter = createRecoveryRateLimiter({ repository });
   let ip1Blocked = false;
   let ip2Blocked = false;
 
   for (let i = 0; i < 3; i += 1) {
-    recoveryRateLimiter({ ip: "10.0.0.1" }, {}, (error) => {
-      if (error) {
-        ip1Blocked = true;
-      }
+    await new Promise((resolve) => {
+      limiter({ ip: "10.0.0.1" }, {}, (error) => {
+        if (error) {
+          ip1Blocked = true;
+        }
+        resolve();
+      });
     });
-    recoveryRateLimiter({ ip: "10.0.0.2" }, {}, (error) => {
-      if (error) {
-        ip2Blocked = true;
-      }
+    await new Promise((resolve) => {
+      limiter({ ip: "10.0.0.2" }, {}, (error) => {
+        if (error) {
+          ip2Blocked = true;
+        }
+        resolve();
+      });
     });
   }
 
@@ -88,7 +147,12 @@ test("recovery rate limiter allows different IPs independently", () => {
   assert.equal(ip2Blocked, false, "3 attempts from IP2 should not be blocked");
 });
 
-test("failed recovery increments user failure count and triggers lockout", async () => {
+test("failed recovery silently increments failure count without leaking outcome", async () => {
+  // Uniform-response recovery: a wrong-question attempt now returns
+  // { success: true } (instead of throwing) so an external attacker cannot
+  // distinguish a missed question from a missed user. The failure counter
+  // is still incremented internally so account-lockout still applies on
+  // the next /login attempt.
   const updates = [];
   const auditLogs = [];
   const authService = new AuthService({
@@ -110,15 +174,13 @@ test("failed recovery increments user failure count and triggers lockout", async
     auditService: { logAction: async (entry) => auditLogs.push(entry) }
   });
 
-  await assert.rejects(
-    () => authService.recoverPasswordWithQuestion({
-      username: "testuser",
-      question: "wrong question",
-      answer: "any",
-      newPassword: "NewPass12345678"
-    }),
-    { message: "security question mismatch" }
-  );
+  const result = await authService.recoverPasswordWithQuestion({
+    username: "testuser",
+    question: "wrong question",
+    answer: "any",
+    newPassword: "NewPass12345678"
+  });
+  assert.deepEqual(result, { success: true }, "must return uniform success");
 
   assert.equal(updates.length, 1);
   assert.equal(updates[0].failedLoginAttempts, 5);
@@ -127,7 +189,10 @@ test("failed recovery increments user failure count and triggers lockout", async
   assert.match(auditLogs[0].reason, /failed recovery attempt/);
 });
 
-test("locked account rejects recovery attempts", async () => {
+test("locked account does not leak lock state on recovery", async () => {
+  // Uniform-response recovery: a locked account must NOT be disclosed via
+  // a 423 ACCOUNT_LOCKED response on the unauthenticated path.
+  const updates = [];
   const authService = new AuthService({
     userRepository: {
       findByUsername: async () => ({
@@ -140,20 +205,65 @@ test("locked account rejects recovery attempts", async () => {
         lockedUntil: new Date(Date.now() + 15 * 60 * 1000),
         securityQuestions: [{ question: "test?", answerHash: "hash" }]
       }),
-      update: async () => {},
+      update: async (_id, payload) => updates.push(payload),
       findById: async () => null
     },
     sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
     auditService: { logAction: async () => {} }
   });
 
-  await assert.rejects(
-    () => authService.recoverPasswordWithQuestion({
-      username: "lockeduser",
-      question: "test?",
-      answer: "any",
-      newPassword: "NewPass12345678"
-    }),
-    { message: "account is temporarily locked" }
-  );
+  const result = await authService.recoverPasswordWithQuestion({
+    username: "lockeduser",
+    question: "test?",
+    answer: "any",
+    newPassword: "NewPass12345678"
+  });
+  assert.deepEqual(result, { success: true }, "must return uniform success");
+  assert.equal(updates.length, 0, "must not modify a locked account on this path");
+});
+
+test("nonexistent user yields the same uniform response on recovery", async () => {
+  const authService = new AuthService({
+    userRepository: {
+      findByUsername: async () => null,
+      update: async () => {
+        throw new Error("must not be called");
+      },
+      findById: async () => null
+    },
+    sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
+    auditService: { logAction: async () => {} }
+  });
+
+  const result = await authService.recoverPasswordWithQuestion({
+    username: "no_such_user",
+    question: "anything",
+    answer: "anything",
+    newPassword: "NewPass12345678"
+  });
+  assert.deepEqual(result, { success: true });
+});
+
+test("malformed/invalid username also yields the uniform response", async () => {
+  const authService = new AuthService({
+    userRepository: {
+      findByUsername: async () => {
+        throw new Error("must not be called");
+      },
+      update: async () => {
+        throw new Error("must not be called");
+      },
+      findById: async () => null
+    },
+    sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
+    auditService: { logAction: async () => {} }
+  });
+
+  const result = await authService.recoverPasswordWithQuestion({
+    username: "!!", // fails normalizeUsername
+    question: "anything",
+    answer: "anything",
+    newPassword: "NewPass12345678"
+  });
+  assert.deepEqual(result, { success: true });
 });

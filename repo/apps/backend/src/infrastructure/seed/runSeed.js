@@ -43,6 +43,15 @@ async function runSeed() {
         encryptedAddress: encryptValue(user.address),
         failedLoginAttempts: 0,
         lockedUntil: null,
+        // Seed accounts require rotation on first login by default. The
+        // SEED_REQUIRE_ROTATION env var can be set to "false" by the test
+        // runner so that the integration suites can authenticate with the
+        // generated seed credentials directly. Production stacks must
+        // never set this.
+        mustRotatePassword:
+          process.env.SEED_REQUIRE_ROTATION === "false"
+            ? false
+            : user.mustRotatePassword !== false,
         createdAt: now,
         updatedAt: now
       },

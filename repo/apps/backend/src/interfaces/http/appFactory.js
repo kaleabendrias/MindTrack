@@ -24,7 +24,7 @@ import { MindTrackController } from "./controllers/MindTrackController.js";
 import { SystemController } from "./controllers/SystemController.js";
 import { UserController } from "./controllers/UserController.js";
 
-import { createAuthenticateMiddleware } from "./middleware/authMiddleware.js";
+import { createAuthenticateMiddleware, enforcePasswordRotation } from "./middleware/authMiddleware.js";
 import { asyncHandler } from "./middleware/asyncHandler.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { sessionRateLimiter } from "./middleware/rateLimitMiddleware.js";
@@ -111,7 +111,14 @@ export function createApp() {
   app.use(createHealthRoutes());
   app.use("/api/v1/auth", createAuthRoutes(authController, authenticate));
 
-  app.use("/api/v1", authenticate, signedRequestRequired, sessionRateLimiter, securityMonitoring);
+  app.use(
+    "/api/v1",
+    authenticate,
+    enforcePasswordRotation,
+    signedRequestRequired,
+    sessionRateLimiter,
+    securityMonitoring
+  );
 
   app.use("/api/v1/mindtrack", createMindTrackRoutes(mindTrackController));
   app.use("/api/v1/system", createSystemRoutes(systemController));

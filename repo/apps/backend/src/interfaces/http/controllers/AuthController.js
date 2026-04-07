@@ -64,11 +64,23 @@ export class AuthController {
   };
 
   recoverPassword = async (req, res) => {
-    await this.authService.recoverPasswordWithQuestion(req.body);
-    res.status(200).json({ data: { success: true } });
+    // The service returns a uniform `{ success: true }` payload regardless of
+    // whether the username/question/answer matched, to prevent account
+    // enumeration via differential responses or HTTP status codes.
+    const data = await this.authService.recoverPasswordWithQuestion(req.body);
+    res.status(200).json({ data });
   };
 
   thirdPartyLogin = async (_req, _res) => {
     await this.thirdPartyLoginService.authenticate();
+  };
+
+  rotatePassword = async (req, res) => {
+    const data = await this.authService.rotatePassword({
+      actor: req.user,
+      currentPassword: req.body?.currentPassword,
+      newPassword: req.body?.newPassword
+    });
+    res.status(200).json({ data });
   };
 }

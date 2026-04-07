@@ -19,6 +19,7 @@ function toEntity(doc, includePii = true) {
     address: includePii ? decryptValue(doc.encryptedAddress) : "",
     failedLoginAttempts: doc.failedLoginAttempts,
     lockedUntil: doc.lockedUntil,
+    mustRotatePassword: Boolean(doc.mustRotatePassword),
     lastLoginAt: doc.lastLoginAt,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt
@@ -50,6 +51,7 @@ export class MongoUserRepository extends UserRepository {
       encryptedAddress: encryptValue(payload.address),
       failedLoginAttempts: 0,
       lockedUntil: null,
+      mustRotatePassword: payload.mustRotatePassword !== false,
       createdAt: now,
       updatedAt: now
     });

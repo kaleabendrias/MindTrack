@@ -12,6 +12,10 @@ export SEED_ADMIN_PASSWORD="TestAdmin$(openssl rand -hex 4)Rotate1"
 export SEED_CLINICIAN_PASSWORD="TestClin$(openssl rand -hex 4)Rotate1"
 export SEED_CLIENT_PASSWORD="TestClient$(openssl rand -hex 4)Rotate1"
 export COOKIE_SECURE="false"
+# Allow seeded users to log in directly during the test stack run. Production
+# stacks must NEVER set this. The mustRotatePassword enforcement code path is
+# still exercised by the targeted unit/integration tests for that feature.
+export SEED_REQUIRE_ROTATION="false"
 
 echo "[tests] Starting stack for test execution..."
 docker compose down -v --remove-orphans >/dev/null 2>&1 || true

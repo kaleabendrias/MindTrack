@@ -14,7 +14,11 @@ export class User {
 
   static validateRole(role) {
     if (!userRoles.includes(role)) {
-      throw new AppError("role must be one of: admin, operator", 400, "INVALID_ROLE");
+      throw new AppError(
+        `role must be one of: ${userRoles.join(", ")}`,
+        400,
+        "INVALID_ROLE"
+      );
     }
   }
 

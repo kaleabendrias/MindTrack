@@ -47,6 +47,7 @@ services:
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-RotateMe_Admin_2026x1}
       SEED_CLINICIAN_PASSWORD: ${SEED_CLINICIAN_PASSWORD:-RotateMe_Clinician_2026x1}
       SEED_CLIENT_PASSWORD: ${SEED_CLIENT_PASSWORD:-RotateMe_Client_2026x1}
+      SEED_REQUIRE_ROTATION: ${SEED_REQUIRE_ROTATION:-true}
       BACKUP_DIRECTORY: /var/lib/offline-system/backups
     depends_on:
       mongodb:

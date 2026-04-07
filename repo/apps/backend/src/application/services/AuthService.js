@@ -37,6 +37,7 @@ export class AuthService {
       permissions: user.permissions,
       phone: canViewPii ? user.phone : maskPii(user.phone),
       address: canViewPii ? user.address : user.address ? "***masked***" : "",
+      mustRotatePassword: Boolean(user.mustRotatePassword),
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
@@ -85,7 +86,9 @@ export class AuthService {
       passwordHash: await hashSecret(password),
       phone: phone || "",
       address: address || "",
-      securityQuestions: normalizedQuestions
+      securityQuestions: normalizedQuestions,
+      // Operator-provisioned password — caller must rotate on first login.
+      mustRotatePassword: true
     });
 
     await this.auditService.logAction({
@@ -173,11 +176,59 @@ export class AuthService {
       requestSigningKey,
       expiresInSeconds: config.accessTokenTtlSeconds,
       refreshExpiresInSeconds: config.refreshTokenTtlSeconds,
+      mustRotatePassword: Boolean(freshUser.mustRotatePassword),
       user: this.sanitizeUser(
         freshUser,
         freshUser.permissions.includes(permissions.piiView)
       )
     };
+  }
+
+  /**
+   * Self-service password rotation. Requires the caller to authenticate by
+   * supplying their CURRENT password, then sets a new password and clears
+   * the mustRotatePassword flag. This is the only path that clears the
+   * flag for a user-controlled rotation; admin resets always set it back
+   * to true.
+   */
+  async rotatePassword({ actor, currentPassword, newPassword }) {
+    if (!actor || !actor.id) {
+      throw new AppError("authentication required", 401, "AUTH_REQUIRED");
+    }
+    const user = await this.userRepository.findById(actor.id);
+    if (!user) {
+      throw new AppError("user not found", 404, "USER_NOT_FOUND");
+    }
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+      throw new AppError("currentPassword and newPassword are required", 400, "INVALID_REQUEST");
+    }
+    const ok = await verifySecret(currentPassword, user.passwordHash);
+    if (!ok) {
+      throw new AppError("invalid credentials", 401, "INVALID_CREDENTIALS");
+    }
+    if (currentPassword === newPassword) {
+      throw new AppError("new password must differ from current password", 400, "INVALID_REQUEST");
+    }
+    enforcePasswordPolicy(newPassword);
+
+    await this.userRepository.update(user.id, {
+      passwordHash: await hashSecret(newPassword),
+      mustRotatePassword: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null
+    });
+
+    await this.auditService.logAction({
+      actorUserId: user.id,
+      action: "update",
+      entityType: "user",
+      entityId: user.id,
+      reason: "self-service password rotation",
+      before: { passwordHash: "***", mustRotatePassword: true },
+      after: { passwordHash: "***", mustRotatePassword: false }
+    });
+
+    return { success: true };
   }
 
   async refreshTokens(refreshToken) {
@@ -255,7 +306,9 @@ export class AuthService {
     await this.userRepository.update(target.id, {
       passwordHash: await hashSecret(newPassword),
       failedLoginAttempts: 0,
-      lockedUntil: null
+      lockedUntil: null,
+      // Admin reset always forces a self-service rotation on next login.
+      mustRotatePassword: true
     });
 
     await this.auditService.logAction({
@@ -265,7 +318,7 @@ export class AuthService {
       entityId: target.id,
       reason: reason || "administrator password reset",
       before: { passwordHash: "***" },
-      after: { passwordHash: "***" }
+      after: { passwordHash: "***", mustRotatePassword: true }
     });
   }
 
@@ -293,37 +346,68 @@ export class AuthService {
   }
 
   async recoverPasswordWithQuestion({ username, question, answer, newPassword }) {
-    const normalizedUsername = User.normalizeUsername(username);
-    const user = await this.userRepository.findByUsername(normalizedUsername);
+    // Account-enumeration mitigation: this endpoint is unauthenticated and
+    // MUST return a uniform shape regardless of whether the username is real,
+    // whether the question matches, or whether the answer matches. The only
+    // signal an external caller can derive is "submit again later" — never
+    // "this user does/does not exist". The single non-uniform branch is the
+    // password-policy check, which validates the *attacker-supplied*
+    // newPassword and therefore leaks no account state.
+    //
+    // We still enforce the password policy up front so that a caller who
+    // already knows their own credentials gets a meaningful failure on a
+    // weak password rather than a silent "ok".
+    enforcePasswordPolicy(newPassword);
+
+    const uniformResponse = { success: true };
+
+    let normalizedUsername;
+    try {
+      normalizedUsername = User.normalizeUsername(username);
+    } catch (_err) {
+      return uniformResponse;
+    }
+
+    const user = await this.userRepository
+      .findByUsername(normalizedUsername)
+      .catch(() => null);
+
     if (!user) {
-      throw new AppError("user not found", 404, "USER_NOT_FOUND");
+      return uniformResponse;
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
-      throw new AppError("account is temporarily locked", 423, "ACCOUNT_LOCKED");
+      // Even an account lock must NOT be disclosed on this path. The lock
+      // still applies on the authenticated /login path, which is where
+      // surfacing it is appropriate.
+      return uniformResponse;
     }
 
     const questionEntry = (user.securityQuestions || []).find(
-      (entry) => entry.question.trim().toLowerCase() === question.trim().toLowerCase()
+      (entry) =>
+        typeof question === "string" &&
+        entry.question.trim().toLowerCase() === question.trim().toLowerCase()
     );
 
     if (!questionEntry) {
       await this.incrementRecoveryFailure(user);
-      throw new AppError("security question mismatch", 401, "SECURITY_QUESTION_MISMATCH");
+      return uniformResponse;
     }
 
-    const answerValid = await verifySecret(answer.trim().toLowerCase(), questionEntry.answerHash);
+    const answerValid = await verifySecret(
+      typeof answer === "string" ? answer.trim().toLowerCase() : "",
+      questionEntry.answerHash
+    );
     if (!answerValid) {
       await this.incrementRecoveryFailure(user);
-      throw new AppError("security answer mismatch", 401, "SECURITY_ANSWER_MISMATCH");
+      return uniformResponse;
     }
-
-    enforcePasswordPolicy(newPassword);
 
     await this.userRepository.update(user.id, {
       passwordHash: await hashSecret(newPassword),
       failedLoginAttempts: 0,
-      lockedUntil: null
+      lockedUntil: null,
+      mustRotatePassword: false
     });
 
     await this.auditService.logAction({
@@ -335,6 +419,8 @@ export class AuthService {
       before: { passwordHash: "***" },
       after: { passwordHash: "***" }
     });
+
+    return uniformResponse;
   }
 
   async incrementRecoveryFailure(user) {

@@ -14,6 +14,21 @@ export const sessionSchema = new mongoose.Schema(
     ipHistory: { type: [String], default: [] },
     userAgentHistory: { type: [String], default: [] },
     lastNonce: { type: String, default: null },
+    // Short-lived nonce ledger. Each entry is { nonce, seenAt: Date }.
+    // The middleware evicts entries older than NONCE_TTL_MS before checking
+    // membership, so the set always represents currently-valid nonces.
+    seenNonces: {
+      type: [
+        new mongoose.Schema(
+          {
+            nonce: { type: String, required: true },
+            seenAt: { type: Date, required: true }
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
     activityHistory: { type: [mongoose.Schema.Types.Mixed], default: [] }
   },
   {

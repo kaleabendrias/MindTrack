@@ -877,3 +877,162 @@ test("unauthenticated /auth/security-questions returns generic payload regardles
   assert.equal(realJson.data.length, 1);
   assert.ok(typeof realJson.data[0].question === "string");
 });
+
+test("/auth/recover-password returns uniform success regardless of user/question/answer validity", async () => {
+  // The recovery endpoint must NEVER expose whether the username exists,
+  // whether the question matched, or whether the answer matched. All
+  // failure modes (other than weak password) collapse to the same
+  // 200 { success: true } payload.
+  const cases = [
+    {
+      label: "non-existent user",
+      body: {
+        username: "zzz_no_such_user_recovery",
+        question: "anything",
+        answer: "anything",
+        newPassword: "FreshNewPass12345!"
+      }
+    },
+    {
+      label: "real user, wrong question",
+      body: {
+        username: "administrator",
+        question: "this is definitely not the question",
+        answer: "anything",
+        newPassword: "FreshNewPass12345!"
+      }
+    },
+    {
+      label: "real user, wrong answer",
+      body: {
+        username: "administrator",
+        question: "What is your primary facility code?",
+        answer: "wrong-answer",
+        newPassword: "FreshNewPass12345!"
+      }
+    }
+  ];
+
+  let firstShape = null;
+  for (const tc of cases) {
+    const res = await fetch(`${BASE}/api/v1/auth/recover-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tc.body)
+    });
+    assert.equal(res.status, 200, `${tc.label}: expected 200, got ${res.status}`);
+    const json = await res.json();
+    assert.deepEqual(json, { data: { success: true } }, `${tc.label}: shape mismatch`);
+    if (!firstShape) {
+      firstShape = json;
+    } else {
+      assert.deepEqual(json, firstShape, `${tc.label}: differs from first response`);
+    }
+  }
+});
+
+test("/auth/recover-password rejects weak passwords with a non-leaky 400", async () => {
+  // The single non-uniform branch is password-policy validation, which
+  // operates on attacker-supplied input only and therefore leaks no
+  // account state.
+  const res = await fetch(`${BASE}/api/v1/auth/recover-password`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      username: "administrator",
+      question: "anything",
+      answer: "anything",
+      newPassword: "x"
+    })
+  });
+  assert.equal(res.status, 400);
+});
+
+test("requestSigningMiddleware rejects non-consecutive nonce replays", async () => {
+  // Drive three GETs with three distinct nonces, then replay the FIRST
+  // (non-most-recent) nonce. The naive lastNonce check would have allowed
+  // this; the persistent ledger must reject it as REPLAY_DETECTED.
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  const path = "/api/v1/mindtrack/clients";
+
+  function customHeaders(nonce) {
+    const timestamp = Date.now();
+    const payload = ["GET", path, String(timestamp), nonce, ""].join("|");
+    const signature = crypto
+      .createHmac("sha256", clinician.csrfToken)
+      .update(payload)
+      .digest("hex");
+    return {
+      cookie: clinician.cookie,
+      "content-type": "application/json",
+      "x-signature-timestamp": String(timestamp),
+      "x-signature-nonce": nonce,
+      "x-signature": signature
+    };
+  }
+
+  const nonceA = crypto.randomUUID();
+  const nonceB = crypto.randomUUID();
+  const nonceC = crypto.randomUUID();
+
+  const res1 = await fetch(`${BASE}${path}`, { headers: customHeaders(nonceA) });
+  assert.equal(res1.status, 200, "fresh nonceA must be accepted");
+
+  const res2 = await fetch(`${BASE}${path}`, { headers: customHeaders(nonceB) });
+  assert.equal(res2.status, 200, "fresh nonceB must be accepted");
+
+  const res3 = await fetch(`${BASE}${path}`, { headers: customHeaders(nonceC) });
+  assert.equal(res3.status, 200, "fresh nonceC must be accepted");
+
+  // Now replay nonceA — the first, NOT the most recent.
+  const replayRes = await fetch(`${BASE}${path}`, { headers: customHeaders(nonceA) });
+  assert.equal(
+    replayRes.status,
+    401,
+    "replayed non-consecutive nonceA must be rejected with 401"
+  );
+  const replayJson = await replayRes.json();
+  assert.equal(replayJson.code, "REPLAY_DETECTED");
+
+  // And replay nonceB.
+  const replayBRes = await fetch(`${BASE}${path}`, { headers: customHeaders(nonceB) });
+  assert.equal(replayBRes.status, 401);
+  const replayBJson = await replayBRes.json();
+  assert.equal(replayBJson.code, "REPLAY_DETECTED");
+});
+
+test("login response surfaces mustRotatePassword flag (false in test stack)", async () => {
+  // The test stack runs with SEED_REQUIRE_ROTATION=false so seeded users
+  // can authenticate directly. The login response must still surface the
+  // mustRotatePassword field so frontends can drive the rotation prompt.
+  const res = await fetch(`${BASE}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "administrator", password: ADMIN_PASS })
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(typeof json.data?.user?.mustRotatePassword, "boolean");
+});
+
+test("/api/v1/system/profile-fields/custom validates malformed payloads with 400", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  const malformedCases = [
+    { reason: "missing field key", body: { field: { label: "x", fieldType: "text" }, reason: "ok" } },
+    { reason: "invalid field type", body: { field: { key: "ok_key", label: "x", fieldType: "rocket" }, reason: "ok" } },
+    { reason: "options on non-select", body: { field: { key: "ok_key", label: "x", fieldType: "text", options: ["a"] }, reason: "ok" } },
+    { reason: "invalid visibleTo", body: { field: { key: "ok_key", label: "x", fieldType: "text", visibleTo: ["root"] }, reason: "ok" } },
+    { reason: "missing reason", body: { field: { key: "ok_key", label: "x", fieldType: "text" } } },
+    { reason: "extra root key", body: { field: { key: "ok_key", label: "x", fieldType: "text" }, reason: "ok", extra: 1 } }
+  ];
+  for (const tc of malformedCases) {
+    const body = JSON.stringify(tc.body);
+    const res = await fetch(`${BASE}/api/v1/system/profile-fields/custom`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/system/profile-fields/custom", { method: "POST", body }),
+      body
+    });
+    assert.equal(res.status, 400, `${tc.reason}: expected 400, got ${res.status}`);
+  }
+});
