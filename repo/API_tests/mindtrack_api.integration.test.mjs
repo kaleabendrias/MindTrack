@@ -540,8 +540,14 @@ test("backup restore preserves audit logs (fidelity)", async () => {
 });
 
 test("backup restore rejects missing idempotency key", async () => {
+  // Use an allowlist-conformant filename so the validator reaches the
+  // x-idempotency-key header check rather than failing earlier on
+  // INVALID_BACKUP_FILENAME.
   const admin = await login("administrator", ADMIN_PASS);
-  const body = JSON.stringify({ filename: "any.enc.json", reason: "test" });
+  const body = JSON.stringify({
+    filename: "mindtrack-backup-2026-04-07T00-00-00-000Z.enc.json",
+    reason: "test"
+  });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
     headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body }),
@@ -1034,5 +1040,212 @@ test("/api/v1/system/profile-fields/custom validates malformed payloads with 400
       body
     });
     assert.equal(res.status, 400, `${tc.reason}: expected 400, got ${res.status}`);
+  }
+});
+
+test("/auth/session requires the full signed-header chain (no signed headers → 401)", async () => {
+  // Phase 2 (protected) auth routes share the global /api/v1 chain. The
+  // /auth/session endpoint is no longer reachable with bare cookies — it
+  // must be called with the full signature/timestamp/nonce trio (and a
+  // valid CSRF on POST routes). This regression locks that in: a fresh
+  // login establishes a session, and then a GET /auth/session WITHOUT
+  // signature headers must be rejected with 401, not silently authorized.
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Bare cookies → 401 (signature headers missing)
+  const bareRes = await fetch(`${BASE}/api/v1/auth/session`, {
+    method: "GET",
+    headers: { cookie: admin.cookie }
+  });
+  assert.equal(
+    bareRes.status,
+    401,
+    "GET /auth/session without signed headers must be rejected"
+  );
+
+  // With the proper signed headers, the same call succeeds.
+  const signedRes = await fetch(`${BASE}/api/v1/auth/session`, {
+    method: "GET",
+    headers: trustedHeaders(admin, "/api/v1/auth/session")
+  });
+  assert.equal(signedRes.status, 200, "signed /auth/session must succeed");
+  const signedJson = await signedRes.json();
+  assert.ok(signedJson.data?.user?.id, "session payload must include the user");
+});
+
+test("/auth/session is rejected when the HMAC signature is forged", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+  const res = await fetch(`${BASE}/api/v1/auth/session`, {
+    method: "GET",
+    headers: {
+      cookie: admin.cookie,
+      "x-signature-timestamp": String(Date.now()),
+      "x-signature-nonce": crypto.randomUUID(),
+      "x-signature": "deadbeef"
+    }
+  });
+  assert.equal(res.status, 401, "forged signature must be rejected");
+});
+
+test("/auth/session falls under the session rate limiter", async () => {
+  // The /auth/session endpoint is now part of the protected /api/v1 chain,
+  // so the same Mongo-backed session rate limit (60/min) applies. Use a
+  // fresh session so we don't pollute the budget for other tests, and
+  // confirm that an extreme burst eventually trips the limiter.
+  const admin = await login("administrator", ADMIN_PASS);
+  let saw429 = false;
+  for (let i = 0; i < 70; i += 1) {
+    const res = await fetch(`${BASE}/api/v1/auth/session`, {
+      headers: trustedHeaders(admin, "/api/v1/auth/session")
+    });
+    if (res.status === 429) {
+      saw429 = true;
+      break;
+    }
+  }
+  assert.equal(saw429, true, "/auth/session must be subject to session rate limiting");
+});
+
+test("/system/backup-restore strict validator rejects malformed bodies before service runs", async () => {
+  // The validateBackupRestoreRequest middleware now runs before the
+  // service. Each of these cases must be rejected at the edge with 400
+  // INVALID_BACKUP_FILENAME or INVALID_REQUEST/IDEMPOTENCY_REQUIRED, never
+  // reaching the filesystem and never deleting any data.
+  const admin = await login("administrator", ADMIN_PASS);
+
+  const cases = [
+    {
+      label: "missing filename",
+      body: { reason: "x" },
+      idem: crypto.randomUUID()
+    },
+    {
+      label: "missing reason",
+      body: { filename: "mindtrack-backup-2026-04-07T00-00-00-000Z.enc.json" },
+      idem: crypto.randomUUID()
+    },
+    {
+      label: "non-allowlisted filename",
+      body: { filename: "evil.enc.json", reason: "x" },
+      idem: crypto.randomUUID()
+    },
+    {
+      label: "traversal in filename",
+      body: { filename: "../etc/passwd", reason: "x" },
+      idem: crypto.randomUUID()
+    },
+    {
+      label: "extra body key",
+      body: {
+        filename: "mindtrack-backup-2026-04-07T00-00-00-000Z.enc.json",
+        reason: "x",
+        extra: 1
+      },
+      idem: crypto.randomUUID()
+    },
+    {
+      label: "missing idempotency header",
+      body: {
+        filename: "mindtrack-backup-2026-04-07T00-00-00-000Z.enc.json",
+        reason: "x"
+      },
+      idem: undefined
+    }
+  ];
+
+  for (const tc of cases) {
+    const body = JSON.stringify(tc.body);
+    const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+        method: "POST",
+        body,
+        idempotencyKey: tc.idem
+      }),
+      body
+    });
+    assert.equal(res.status, 400, `${tc.label}: expected 400, got ${res.status}`);
+  }
+});
+
+test("/system/backup-restore: validator failure must NOT mutate any data", async () => {
+  // Boundary test: a validator-rejected restore must leave the system in
+  // exactly its prior state. We compare client counts before and after a
+  // batch of malformed restore attempts.
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  const beforeRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
+  });
+  const beforeJson = await beforeRes.json();
+  assert.equal(beforeRes.status, 200);
+  const beforeCount = beforeJson.data.length;
+
+  const malformedAttempts = [
+    { filename: "evil.enc.json", reason: "y" },
+    { filename: "../etc/passwd", reason: "y" },
+    {
+      filename: "mindtrack-backup-2026-04-07T00-00-00-000Z.enc.json",
+      reason: "y",
+      hax: true
+    }
+  ];
+  for (const m of malformedAttempts) {
+    const body = JSON.stringify(m);
+    await fetch(`${BASE}/api/v1/system/backup-restore`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+        method: "POST",
+        body,
+        idempotencyKey: crypto.randomUUID()
+      }),
+      body
+    });
+  }
+
+  const clinicianAfter = await login("clinician", CLINICIAN_PASS);
+  const afterRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(clinicianAfter, "/api/v1/mindtrack/clients")
+  });
+  assert.equal(afterRes.status, 200);
+  const afterJson = await afterRes.json();
+  assert.equal(
+    afterJson.data.length,
+    beforeCount,
+    "malformed restore attempts must not mutate data"
+  );
+});
+
+test("/auth/rotate-password validator rejects unknown body keys and missing fields", async () => {
+  // The new validateRotatePasswordRequest is mounted on the protected
+  // /auth/rotate-password route. Each malformed body must hit a 400 at
+  // the validator boundary, never reaching AuthService.rotatePassword.
+  const admin = await login("administrator", ADMIN_PASS);
+
+  const cases = [
+    { label: "empty body", body: {} },
+    { label: "missing newPassword", body: { currentPassword: "x" } },
+    { label: "missing currentPassword", body: { newPassword: "y" } },
+    {
+      label: "extra root key",
+      body: { currentPassword: "x", newPassword: "y", smuggle: 1 }
+    },
+    {
+      label: "non-string fields",
+      body: { currentPassword: 1, newPassword: 2 }
+    }
+  ];
+  for (const tc of cases) {
+    const body = JSON.stringify(tc.body);
+    const res = await fetch(`${BASE}/api/v1/auth/rotate-password`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/auth/rotate-password", {
+        method: "POST",
+        body
+      }),
+      body
+    });
+    assert.equal(res.status, 400, `${tc.label}: expected 400, got ${res.status}`);
   }
 });

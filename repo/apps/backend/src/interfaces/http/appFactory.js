@@ -25,12 +25,11 @@ import { SystemController } from "./controllers/SystemController.js";
 import { UserController } from "./controllers/UserController.js";
 
 import { createAuthenticateMiddleware, enforcePasswordRotation } from "./middleware/authMiddleware.js";
-import { asyncHandler } from "./middleware/asyncHandler.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { sessionRateLimiter } from "./middleware/rateLimitMiddleware.js";
 import { createRequestSigningMiddleware } from "./middleware/requestSigningMiddleware.js";
 import { createSecurityMonitoringMiddleware } from "./middleware/securityMonitoringMiddleware.js";
-import { createAuthRoutes } from "./routes/authRoutes.js";
+import { createProtectedAuthRoutes, createUnauthAuthRoutes } from "./routes/authRoutes.js";
 import { createHealthRoutes } from "./routes/healthRoutes.js";
 import { createMindTrackRoutes } from "./routes/mindTrackRoutes.js";
 import { createSystemRoutes } from "./routes/systemRoutes.js";
@@ -109,8 +108,16 @@ export function createApp() {
   app.use(express.json({ limit: "50mb" }));
 
   app.use(createHealthRoutes());
-  app.use("/api/v1/auth", createAuthRoutes(authController, authenticate));
 
+  // Phase 1 — bootstrap auth routes (no session yet, so no signing/rate
+  // limiting/security monitoring is possible). These ONLY contain login,
+  // refresh, security-questions, recover-password, and third-party.
+  app.use("/api/v1/auth", createUnauthAuthRoutes(authController));
+
+  // Phase 2 — global protected middleware stack. Every route mounted after
+  // this point goes through the same chain: authenticate → password
+  // rotation enforcement → request signing/CSRF/replay → session rate
+  // limiting → security monitoring. There is no second-class auth surface.
   app.use(
     "/api/v1",
     authenticate,
@@ -120,10 +127,15 @@ export function createApp() {
     securityMonitoring
   );
 
+  // Phase 3 — protected routes, including the AUTHENTICATED auth routes
+  // (session, rotate-password, logout). They are mounted under /api/v1/auth
+  // so they live alongside the bootstrap routes from a URL perspective,
+  // but they receive the full /api/v1 middleware chain because Phase 2
+  // already ran on this prefix.
+  app.use("/api/v1/auth", createProtectedAuthRoutes(authController));
   app.use("/api/v1/mindtrack", createMindTrackRoutes(mindTrackController));
   app.use("/api/v1/system", createSystemRoutes(systemController));
   app.use("/api/v1/users", createUserRoutes(userController));
-  app.post("/api/v1/auth/logout", asyncHandler(authController.logout));
 
   app.use(errorHandler);
 

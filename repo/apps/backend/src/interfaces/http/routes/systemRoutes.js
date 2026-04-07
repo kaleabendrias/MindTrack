@@ -5,6 +5,7 @@ import { requirePermission } from "../middleware/authMiddleware.js";
 import { validateRequest } from "../middleware/validationMiddleware.js";
 import {
   validateAddCustomProfileField,
+  validateBackupRestoreRequest,
   validateBackupRun,
   validateDeleteCustomProfileField,
   validateProfileFieldUpdate,
@@ -57,6 +58,7 @@ export function createSystemRoutes(controller) {
   router.post(
     "/backup-restore",
     requirePermission(permissions.auditRead),
+    validateRequest(validateBackupRestoreRequest),
     asyncHandler(controller.restoreFromBackup)
   );
   router.get(

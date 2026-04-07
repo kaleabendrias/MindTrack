@@ -425,16 +425,25 @@ export class SystemService {
         } catch (err) {
           // Restore is wrapped in a MongoDB transaction; on failure the
           // transaction rolls back so the system stays in its prior state.
-          // Record the rollback event in the (still-immutable) audit log.
+          // Record the failure in the (still-immutable) audit log so the
+          // operator can audit the attempt even when nothing changed.
           await this.auditService.logAction({
             actorUserId: actor.id,
             action: "update",
             entityType: "backup_restore",
             entityId: filename,
-            reason: `${reason} (rolled back: ${err.message})`,
+            reason: `${reason} (failed: ${err.message})`,
             before: { filename, generatedAt: snapshot.generatedAt },
             after: null
           });
+          // Preserve the original error code/status when the restore was
+          // rejected before any destructive write (e.g. the replica-set
+          // precondition). For genuine mid-restore failures we surface
+          // RESTORE_ROLLED_BACK so the caller can distinguish "we tried
+          // and rolled back" from "we refused to start".
+          if (err && err.code === "RESTORE_REQUIRES_REPLICA_SET") {
+            throw err;
+          }
           throw new AppError(
             `restore rolled back: ${err.message}`,
             500,

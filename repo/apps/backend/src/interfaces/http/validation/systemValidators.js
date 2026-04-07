@@ -153,6 +153,46 @@ export function validateDeleteCustomProfileField(req) {
   }
 }
 
+// /system/backup-restore is a critical destructive operation. The validator
+// enforces a strict allowlist (filename + reason ONLY), shape constraints
+// on `filename` (matches the same allowlist regex used by
+// SystemService.resolveBackupPath so the request is rejected at the edge
+// before reaching service code), and a non-empty `reason`. The
+// `x-idempotency-key` header is checked separately by the service layer
+// since it lives outside the body.
+const BACKUP_FILENAME_ROUTE_PATTERN = /^mindtrack-backup-[A-Za-z0-9-]+\.enc\.json$/;
+
+export function validateBackupRestoreRequest(req) {
+  requireObject(req.body, "body");
+  enforceAllowedKeys(req.body, ["filename", "reason"], "body");
+  requireNonEmptyString(req.body.filename, "filename", 200);
+  if (!BACKUP_FILENAME_ROUTE_PATTERN.test(req.body.filename)) {
+    throw new AppError(
+      "filename must match ^mindtrack-backup-[A-Za-z0-9-]+\\.enc\\.json$",
+      400,
+      "INVALID_BACKUP_FILENAME"
+    );
+  }
+  requireNonEmptyString(req.body.reason, "reason", 255);
+  // The idempotency key is required by the service layer; surface it as a
+  // 400 here too so the malformed-request boundary is consistent.
+  const idemKey = req.get ? req.get("x-idempotency-key") : null;
+  if (!idemKey || typeof idemKey !== "string" || idemKey.length === 0) {
+    throw new AppError(
+      "x-idempotency-key header is required",
+      400,
+      "IDEMPOTENCY_REQUIRED"
+    );
+  }
+  if (idemKey.length > 200) {
+    throw new AppError(
+      "x-idempotency-key header is too long",
+      400,
+      "INVALID_REQUEST"
+    );
+  }
+}
+
 export function validateBackupRun(req) {
   if (req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
     enforceAllowedKeys(req.body, ["reason"], "body");

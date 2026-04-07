@@ -53,12 +53,13 @@ export function requirePermission(permission) {
 }
 
 // Routes that remain accessible while a user still has mustRotatePassword=true.
-// Everything else under /api/v1 is blocked until the user rotates.
+// Everything else under /api/v1 is blocked until the user rotates. We compare
+// against `req.originalUrl` (with query string stripped) so the check is
+// stable regardless of how middleware is mounted.
 const PASSWORD_ROTATION_EXEMPT_PATHS = new Set([
   "/api/v1/auth/session",
   "/api/v1/auth/logout",
-  "/api/v1/auth/rotate-password",
-  "/api/v1/users/me/rotate-password"
+  "/api/v1/auth/rotate-password"
 ]);
 
 export function enforcePasswordRotation(req, _res, next) {
@@ -66,8 +67,8 @@ export function enforcePasswordRotation(req, _res, next) {
     next();
     return;
   }
-  const basePath = req.path || req.originalUrl?.split("?")[0] || "/";
-  if (PASSWORD_ROTATION_EXEMPT_PATHS.has(basePath)) {
+  const fullPath = (req.originalUrl || req.url || "/").split("?")[0];
+  if (PASSWORD_ROTATION_EXEMPT_PATHS.has(fullPath)) {
     next();
     return;
   }

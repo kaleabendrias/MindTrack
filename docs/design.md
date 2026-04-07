@@ -1,98 +1,161 @@
-# MindTrack Offline Design
+# MindTrack Backend — Design Notes
 
-## 1. Purpose and Scope
-MindTrack Offline is an on-prem, fully offline mental-health workflow system. It provides role-based workflows for administrator, clinician, and client users, with auditability, data governance, and strict request protection controls.
+This is a high-level design reference for engineers maintaining the
+MindTrack offline on-prem backend. It is intentionally kept short and
+focuses on the architectural invariants that are easy to break by
+accident. For the live route inventory see `docs/api-spec.md`.
 
-Goals:
-- Run entirely in a local environment with Docker Compose.
-- Keep PHI/PII protected at rest and in transit.
-- Enforce object-level authorization and role boundaries.
-- Support governance controls: audit immutability, legal hold, retention, and encrypted backups.
+## Layered architecture
 
-## 2. High-Level Architecture
-Runtime services (docker-compose):
-- frontend: React SPA served by Nginx, exposed on port 3000.
-- backend: Node.js + Express API, exposed on port 4000.
-- mongodb: MongoDB 7 with replica set rs0.
-- mongo-rs-init: one-shot replica set initializer.
-- mongo-seed: deterministic seed/bootstrap job.
-- test-runner and e2e-runner: containerized test executors.
+```
+interfaces/http        ← Express controllers, routers, middleware
+application/services   ← Use cases; orchestrates repositories + auditing
+application/security   ← Password policy, etc.
+domain/                ← Pure entities, value objects, repository contracts
+infrastructure/        ← Mongo models, encryption, token service, seed
+```
 
-Layering:
-- HTTP interface: apps/backend/src/interfaces/http
-- Application services: apps/backend/src/application/services
-- Domain: apps/backend/src/domain
-- Infrastructure repositories/persistence: apps/backend/src/infrastructure
+The dependency direction is one-way: `interfaces → application → domain ←
+infrastructure`. The domain has no imports from infrastructure or
+interfaces. Repositories are defined as abstract classes in
+`domain/repositories/` and implemented as `Mongo*Repository` in
+`infrastructure/repositories/`.
 
-## 3. Backend Design
-Core composition is wired in appFactory.js:
-- Repositories (Mongo*) are instantiated first.
-- Services are composed from repositories.
-- Controllers expose service behavior via route modules.
-- Middleware stack enforces authentication, request signing, rate limit, and security monitoring.
+## Protected route chain
 
-Main route groups:
-- /healthz
-- /api/v1/auth
-- /api/v1/work-orders
-- /api/v1/mindtrack
-- /api/v1/system
-- /api/v1/users
+Every authenticated route lives under the global `/api/v1` middleware
+stack. There is no second-class auth surface — including for the
+authenticated `/auth/*` routes.
 
-Security pipeline for protected routes:
-1. Session authentication (cookie-backed).
-2. HMAC request signing validation.
-3. Session rate limiting.
-4. Behavioral security monitoring flagging.
+```
+helmet → cors → safeLogger → express.json
+                                  │
+        ┌─────────── /api/v1/auth (Phase 1, unauth) ─────────────┐
+        │   /login, /refresh, /security-questions,                │
+        │   /recover-password, /third-party                       │
+        └─────────────────────────────────────────────────────────┘
+                                  │
+        ┌─────────────── app.use("/api/v1", …) ──────────────────┐
+        │   authenticate                                          │
+        │   enforcePasswordRotation                               │
+        │   requestSigningMiddleware (HMAC + nonce ledger + CSRF) │
+        │   sessionRateLimiter   (Mongo bucket)                   │
+        │   securityMonitoringMiddleware                          │
+        └─────────────────────────────────────────────────────────┘
+                                  │
+        ┌─────────── /api/v1/auth (Phase 2, protected) ──────────┐
+        │   /session, /rotate-password, /logout                   │
+        └─────────────────────────────────────────────────────────┘
+        ┌───────────── /api/v1/mindtrack ─────────────────────────┐
+        ┌───────────── /api/v1/system ────────────────────────────┐
+        ┌───────────── /api/v1/users ─────────────────────────────┐
+                                  │
+                              errorHandler
+```
 
-## 4. Frontend Design
-Frontend is a React + Vite SPA:
-- App bootstraps by fetching /api/v1/auth/session.
-- Role-based route policy sends users to:
-  - /administrator
-  - /clinician
-  - /client
-- Client role receives self-context only.
-- Clinician/administrator roles get search and discovery surfaces.
-- Logout clears in-memory auth and UI state.
+The two-phase split is the only correct way to keep `/auth/login` outside
+the signing chain (no session exists yet) while keeping `/auth/session`
+inside it. Mounting `/auth/session` on a separate router that bypasses the
+chain — as the code did historically — created an exempt surface where
+request signing, replay protection, session rate limiting, and security
+monitoring did not run.
 
-Primary app modules:
-- apps/frontend/src/modules/administrator
-- apps/frontend/src/modules/clinician
-- apps/frontend/src/modules/client
-- Shared components in apps/frontend/src/shared/ui
+## Restore atomicity
 
-## 5. Security and Privacy Controls
-Implemented controls in code and tests:
-- HTTP-only cookie sessions for auth.
-- CSRF token and request nonce on mutating operations.
-- Per-session HMAC request signatures.
-- Idempotency keys on critical write endpoints.
-- Account lockout and request rate limiting.
-- Role and permission checks for privileged actions.
-- PII masking by default without PII_VIEW privilege.
-- Encrypted-at-rest fields for sensitive client data.
-- Immutable audit logging.
+`MongoSystemRepository.restoreCollections` runs the entire restore inside
+`session.withTransaction(...)`. Multi-document transactions require a
+replica set, so the repository:
 
-## 6. Data Governance Design
-Governance capabilities include:
-- Legal hold at client level to block mutation paths.
-- Retention metadata tracking.
-- Backup status endpoint with nightly schedule semantics.
-- Manual backup execution endpoint producing encrypted artifact names.
-- Audit immutability check endpoint.
+1. Verifies the replica-set precondition at startup
+   (`server.js → assertReplicaSet()`).
+2. Re-verifies on every restore call before any destructive operation.
+3. Throws `503 RESTORE_REQUIRES_REPLICA_SET` if the precondition fails.
 
-## 7. Testing Design
-Test strategy combines unit, integration, and E2E:
-- Backend unit tests: unit_tests/backend
-- Frontend unit tests: unit_tests/frontend
-- API integration tests: API_tests
-- E2E tests: e2e/tests
+There is **no** "best-effort sequential" fallback for standalone Mongo.
+Partial state corruption is unacceptable on this code path; the system
+fails closed instead.
 
-Single entrypoint:
-- ./run_tests.sh starts required containers and runs all suites.
+The audit log collection (`auditLogSchema`) is excluded from restore.
+Audit logs are append-only and any restore that overwrote them would
+break the chain of custody.
 
-## 8. Operational Constraints
-- Offline-only policy: external network integrations are disabled.
-- Docker Compose is the supported runtime entrypoint.
-- Deterministic seed data enables reproducible verification and testing.
+## Replay-protected nonce ledger
+
+`requestSigningMiddleware` calls `sessionRepository.recordNonce`, which is
+an atomic two-phase Mongo operation:
+
+1. `$pull` any nonce older than `NONCE_TTL_MS`.
+2. Conditional `$push` that only inserts the new nonce if no surviving
+   entry already matches it.
+
+This rejects ANY previously seen nonce within its TTL — not just the most
+recent one — which defends against non-consecutive replay attacks.
+
+## Account-enumeration mitigations
+
+- `GET /auth/security-questions` returns the same generic payload for any
+  username, and is rate limited.
+- `POST /auth/recover-password` returns `{ success: true }` for every
+  shape-valid input, including non-existent username, wrong question,
+  wrong answer, and locked accounts. The internal failure counter still
+  ticks so login lockout still applies on the next `/login` attempt.
+
+## Password rotation enforcement
+
+Operator-provisioned passwords (seed, admin reset, registration) set
+`mustRotatePassword=true` on the user. The `enforcePasswordRotation`
+middleware blocks every `/api/v1` request from such a user with
+`403 PASSWORD_ROTATION_REQUIRED` until they call
+`POST /api/v1/auth/rotate-password`. Exempt routes are
+`/api/v1/auth/session`, `/api/v1/auth/logout`, and
+`/api/v1/auth/rotate-password` — the minimal set required for the user
+to actually perform the rotation.
+
+The test stack opts out via `SEED_REQUIRE_ROTATION=false` so existing
+integration suites can authenticate seeded users directly without
+rotating first. This env var must never be set in production.
+
+## Persistent rate limiting
+
+`MongoRateLimitRepository` backs every limiter against MongoDB so that
+abuse-control budgets:
+
+- survive backend process restarts,
+- are shared across multiple backend instances in any future
+  horizontal-scale deployment.
+
+Three named limiters are exported from `rateLimitMiddleware.js`:
+
+| Name | Bucket scope | Default budget |
+| --- | --- | --- |
+| `sessionRateLimiter`        | `session:<sessionId>`        | 60 / minute |
+| `recoveryRateLimiter`       | `ip-recovery:<ip>`           | 5 / 15 min, 15-min lock |
+| `questionLookupRateLimiter` | `ip-question-lookup:<ip>`   | 30 / 15 min |
+
+## Validation
+
+Every authenticated, mutating route is wrapped in
+`validateRequest(<validator>)`. Validators live in
+`apps/backend/src/interfaces/http/validation/` and use the helpers from
+`requestValidation.js`. New routes MUST add a validator before merging —
+validation is the only place where allowlists, allowed key sets, and
+field-shape constraints are enforced. The service layer trusts that
+validation has run.
+
+The two highest-stakes validators are:
+
+- `validateBackupRestoreRequest` — strict allowlist (`filename`, `reason`),
+  filename regex `^mindtrack-backup-[A-Za-z0-9-]+\.enc\.json$`, length cap,
+  and explicit `x-idempotency-key` header check.
+- `validateRotatePasswordRequest` — strict allowlist
+  (`currentPassword`, `newPassword`), both required as non-empty strings,
+  ≤ 255 chars each.
+
+## What does NOT exist (and never should)
+
+- Any `/work-orders` endpoints. They were drafted in early specs but never
+  mounted; documentation now reflects that and the e2e suite asserts the
+  404. Do not add them back without an architectural review.
+- Any in-memory rate-limit Maps, in-memory nonce caches, or in-memory
+  session stores. State that must survive restarts lives in MongoDB.
+- Any non-transactional restore path. Restore is replica-set-only.

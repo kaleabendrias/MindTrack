@@ -1,5 +1,14 @@
 import mongoose from "mongoose";
+import { AppError } from "../../domain/errors/AppError.js";
 import { AuditLogModel } from "../persistence/models/AuditLogModel.js";
+
+function makeReplicaSetError(detail) {
+  return new AppError(
+    `restore requires a MongoDB replica set: ${detail}`,
+    503,
+    "RESTORE_REQUIRES_REPLICA_SET"
+  );
+}
 import { FacilityModel } from "../persistence/models/FacilityModel.js";
 import { MindTrackClientModel } from "../persistence/models/MindTrackClientModel.js";
 import { MindTrackEntryModel } from "../persistence/models/MindTrackEntryModel.js";
@@ -48,44 +57,69 @@ export class MongoSystemRepository {
     };
   }
 
+  /**
+   * Restore the application's collections from a snapshot, atomically.
+   *
+   * Hard requirements:
+   *   1. The deployment MUST be running against a MongoDB replica set
+   *      (`rs.status().ok === 1`). Standalone instances are rejected before
+   *      any destructive write so the system fails closed instead of
+   *      degrading to a non-atomic restore.
+   *   2. The audit log collection (auditLogSchema) is never written by
+   *      restore — it is append-only and immutable.
+   *   3. The whole sequence runs inside a single multi-document transaction;
+   *      any failure aborts the transaction and the database is left in its
+   *      pre-restore state.
+   *
+   * On a standalone deployment the method throws `RESTORE_REQUIRES_REPLICA_SET`
+   * BEFORE deleting anything. There is no longer a "best-effort sequential"
+   * fallback path — partial-state corruption is unacceptable.
+   */
   async restoreCollections(snapshot) {
-    // Audit logs are intentionally excluded from restore operations to preserve
-    // their strict immutability and maintain a continuous, append-only ledger.
-    // The full restore sequence runs inside a single MongoDB transaction so
-    // that any partial failure rolls back cleanly and the system never enters
-    // an inconsistent state.
+    await this.assertReplicaSet();
+
     const session = await mongoose.startSession();
     try {
-      let transactional = true;
-      try {
-        await session.withTransaction(async () => {
-          await this._applyRestore(snapshot, session);
-        });
-      } catch (err) {
-        // Standalone Mongo (non-replica-set) deployments cannot run
-        // multi-document transactions. Fall back to a best-effort sequential
-        // restore that still skips audit logs and reports its mode.
-        const message = err && err.message ? err.message : "";
-        const code = err && err.codeName ? err.codeName : "";
-        const standalone =
-          message.includes("Transaction numbers are only allowed on a replica set") ||
-          message.includes("transaction") ||
-          code === "IllegalOperation" ||
-          code === "NotImplemented";
-        if (!standalone) {
-          throw err;
-        }
-        transactional = false;
-        await this._applyRestore(snapshot, null);
-      }
-      return { transactional };
+      await session.withTransaction(async () => {
+        await this._applyRestore(snapshot, session);
+      });
+      return { transactional: true };
     } finally {
       session.endSession();
     }
   }
 
+  /**
+   * Verify that the connected MongoDB instance is a replica-set primary.
+   * Cached after the first successful check so the runtime cost is one
+   * `replSetGetStatus` call per process. The check throws an `AppError`
+   * with `RESTORE_REQUIRES_REPLICA_SET` so the caller can surface a
+   * meaningful 4xx/5xx without exposing Mongo internals.
+   */
+  async assertReplicaSet() {
+    if (this._replicaSetVerified) {
+      return;
+    }
+    const conn = mongoose.connection;
+    if (!conn || conn.readyState !== 1 || !conn.db) {
+      throw makeReplicaSetError("mongo connection is not ready");
+    }
+    let status;
+    try {
+      status = await conn.db.admin().command({ replSetGetStatus: 1 });
+    } catch (err) {
+      throw makeReplicaSetError(
+        `replica set status check failed: ${err && err.message ? err.message : err}`
+      );
+    }
+    if (!status || status.ok !== 1 || !Array.isArray(status.members)) {
+      throw makeReplicaSetError("mongo is not running as a replica set");
+    }
+    this._replicaSetVerified = true;
+  }
+
   async _applyRestore(snapshot, session) {
-    const opts = session ? { session } : undefined;
+    const opts = { session };
     if (snapshot.users?.length) {
       await UserModel.deleteMany({}, opts);
       await UserModel.insertMany(snapshot.users, opts);
@@ -106,9 +140,10 @@ export class MongoSystemRepository {
       await SystemSettingsModel.deleteMany({}, opts);
       await SystemSettingsModel.insertMany(snapshot.settings, opts);
     }
-    // NOTE: snapshot.auditLogs is intentionally NOT restored. The auditLogSchema
-    // is append-only — overwriting it would break the historical chain of
-    // custody for who/what/when/why and is forbidden by the immutability rule.
+    // NOTE: snapshot.auditLogs is intentionally NOT restored. The
+    // auditLogSchema is append-only — overwriting it would break the
+    // historical chain of custody for who/what/when/why and is forbidden
+    // by the immutability rule.
   }
 
   async countAuditLogs() {

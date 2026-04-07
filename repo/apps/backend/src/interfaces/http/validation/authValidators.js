@@ -28,3 +28,15 @@ export function validateRecoveryRequest(req) {
   requireNonEmptyString(req.body.answer, "answer", 200);
   requireNonEmptyString(req.body.newPassword, "newPassword", 255);
 }
+
+// /auth/rotate-password is a critical, authenticated write that swaps a
+// user's stored credential. The validator enforces a strict allowlist —
+// only `currentPassword` and `newPassword` are accepted, both required as
+// non-empty strings, with maximum lengths to defend against pathological
+// inputs reaching the password hasher (which can be CPU-expensive).
+export function validateRotatePasswordRequest(req) {
+  requireObject(req.body, "body");
+  enforceAllowedKeys(req.body, ["currentPassword", "newPassword"], "body");
+  requireNonEmptyString(req.body.currentPassword, "currentPassword", 255);
+  requireNonEmptyString(req.body.newPassword, "newPassword", 255);
+}

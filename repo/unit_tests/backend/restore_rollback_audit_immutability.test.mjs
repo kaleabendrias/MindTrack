@@ -130,15 +130,18 @@ test("restoreFromBackup rolls back on failure and records the rollback in the au
     assert.equal(err.code, "RESTORE_ROLLED_BACK");
     assert.equal(err.statusCode, 500);
 
-    // The audit log must capture the rollback (even though the underlying
-    // mutation was rolled back).
+    // The audit log must capture the failed restore (even though the
+    // underlying mutation was rolled back). The exact wording in the
+    // reason is "(failed: …)" so that the same code path can record
+    // both true rollbacks and pre-write refusals (e.g. replica-set
+    // precondition failures) consistently.
     const rollbackEntry = auditService.calls.find(
       (call) =>
         call.entityType === "backup_restore" &&
         typeof call.reason === "string" &&
-        call.reason.includes("rolled back")
+        call.reason.includes("failed:")
     );
-    assert.ok(rollbackEntry, "rollback must be recorded in the audit log");
+    assert.ok(rollbackEntry, "failed restore must be recorded in the audit log");
   }
 });
 
