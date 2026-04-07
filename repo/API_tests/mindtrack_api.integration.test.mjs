@@ -1249,3 +1249,215 @@ test("/auth/rotate-password validator rejects unknown body keys and missing fiel
     assert.equal(res.status, 400, `${tc.label}: expected 400, got ${res.status}`);
   }
 });
+
+test("attachment download requires the full signed-header chain (binary signed-fetch path)", async () => {
+  // Create an entry with a tiny inline PNG attachment, then attempt to
+  // download it both WITHOUT signed headers (must be 401) and WITH them
+  // (must succeed and return the original bytes).
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Smallest possible 1x1 PNG, base64-encoded.
+  const tinyPng =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII=";
+  const expectedBytes = Buffer.from(tinyPng, "base64");
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(`download-${Date.now()}-${Math.random()}`)
+    .digest("hex");
+
+  // Use cli002 because an earlier test in the suite ("retention and
+  // legal-hold enforcement") puts cli001 on a permanent legal hold,
+  // which would otherwise cause a 409 RETENTION_BLOCKED here.
+  const entryBody = JSON.stringify({
+    clientId: "cli002",
+    entryType: "assessment",
+    title: "Attachment download test",
+    body: "Verifies the signed-fetch path for attachments.",
+    tags: ["attachments-test"],
+    reason: "attachment download regression",
+    attachments: [
+      {
+        name: "pixel.png",
+        type: "image/png",
+        sizeBytes: expectedBytes.length,
+        fingerprint,
+        data: tinyPng
+      }
+    ]
+  });
+  const createRes = await fetch(`${BASE}/api/v1/mindtrack/entries`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/entries", { method: "POST", body: entryBody }),
+    body: entryBody
+  });
+  assert.equal(createRes.status, 201, "entry creation must succeed");
+  const createJson = await createRes.json();
+  const entryId = createJson.data._id;
+  assert.ok(entryId, "created entry must expose _id");
+
+  const downloadPath = `/api/v1/mindtrack/entries/${entryId}/attachments/${fingerprint}`;
+
+  // 1) Bare cookies → must be 401: the protected /api/v1 chain rejects
+  //    the unsigned GET that the legacy <a href> approach would issue.
+  const unsignedRes = await fetch(`${BASE}${downloadPath}`, {
+    method: "GET",
+    headers: { cookie: clinician.cookie }
+  });
+  assert.equal(
+    unsignedRes.status,
+    401,
+    "unsigned attachment download must be rejected by the protected chain"
+  );
+
+  // 2) Signed binary fetch — must succeed and return the original bytes.
+  const signedRes = await fetch(`${BASE}${downloadPath}`, {
+    method: "GET",
+    headers: trustedHeaders(clinician, downloadPath)
+  });
+  assert.equal(signedRes.status, 200, "signed attachment download must succeed");
+  assert.match(
+    signedRes.headers.get("content-type") || "",
+    /image\/png/,
+    "Content-Type must be propagated"
+  );
+  const downloaded = Buffer.from(await signedRes.arrayBuffer());
+  assert.deepEqual(downloaded, expectedBytes, "downloaded bytes must match the originals");
+});
+
+test("/mindtrack/search rejects malformed regex inputs at the validator boundary", async () => {
+  // The search service now escapes user input before constructing a
+  // RegExp. Inputs that exceed the safe length cap or contain control
+  // characters return 400 instead of crashing the regex engine.
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  const cases = [
+    { label: "200+ char query", q: "a".repeat(250), expectedCode: "SEARCH_QUERY_TOO_LONG" },
+    { label: "NUL byte", q: "foo%00bar", expectedCode: "SEARCH_QUERY_INVALID" },
+    { label: "control char (BEL)", q: "foo%07bar", expectedCode: "SEARCH_QUERY_INVALID" }
+  ];
+  for (const tc of cases) {
+    const path = `/api/v1/mindtrack/search?q=${tc.q}`;
+    const res = await fetch(`${BASE}${path}`, {
+      headers: trustedHeaders(clinician, path)
+    });
+    assert.equal(res.status, 400, `${tc.label}: expected 400, got ${res.status}`);
+    const json = await res.json();
+    assert.equal(json.code, tc.expectedCode, `${tc.label}: code mismatch`);
+  }
+});
+
+test("/mindtrack/search treats injected regex syntax as a literal substring (no injection)", async () => {
+  // Confirm the escaped-regex path: passing `(.*)+` should NOT match
+  // arbitrary entries — the search engine now treats it as a literal
+  // 5-character substring, which won't appear in any seeded body, so
+  // every returned entry MUST literally contain the query.
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  const path = `/api/v1/mindtrack/search?q=${encodeURIComponent("(.*)+")}`;
+  const res = await fetch(`${BASE}${path}`, {
+    headers: trustedHeaders(clinician, path)
+  });
+  assert.equal(res.status, 200, "valid (escaped) input must return 200");
+  const json = await res.json();
+  for (const entry of json.data?.entries || []) {
+    const haystack = `${entry.title || ""} ${entry.body || ""}`;
+    assert.ok(
+      haystack.includes("(.*)+"),
+      "an entry returned by the escaped search must literally contain the query"
+    );
+  }
+});
+
+test("401/403/404 matrix across sensitive endpoint families", async () => {
+  // Single consolidated regression for the closed-box semantics of the
+  // most sensitive endpoint surfaces. Each row asserts the documented
+  // status against a known caller identity.
+  const admin = await login("administrator", ADMIN_PASS);
+  const client = await login("client", CLIENT_PASS);
+
+  const rows = [
+    // 401 — no signed headers at all
+    {
+      label: "401 /system/backup-status without signed headers",
+      method: "GET",
+      url: "/api/v1/system/backup-status",
+      headers: { cookie: admin.cookie },
+      expect: 401
+    },
+    {
+      label: "401 /mindtrack/clients without signed headers",
+      method: "GET",
+      url: "/api/v1/mindtrack/clients",
+      headers: { cookie: admin.cookie },
+      expect: 401
+    },
+    {
+      label: "401 /auth/session without signed headers",
+      method: "GET",
+      url: "/api/v1/auth/session",
+      headers: { cookie: admin.cookie },
+      expect: 401
+    },
+    // 403 — authenticated but missing permission
+    {
+      label: "403 /system/backup-status as client",
+      method: "GET",
+      url: "/api/v1/system/backup-status",
+      headers: trustedHeaders(client, "/api/v1/system/backup-status"),
+      expect: 403
+    },
+    {
+      label: "403 /system/security-flags as client",
+      method: "GET",
+      url: "/api/v1/system/security-flags",
+      headers: trustedHeaders(client, "/api/v1/system/security-flags"),
+      expect: 403
+    },
+    {
+      label: "403 /system/backup-files as client",
+      method: "GET",
+      url: "/api/v1/system/backup-files",
+      headers: trustedHeaders(client, "/api/v1/system/backup-files"),
+      expect: 403
+    },
+    {
+      label: "403 /users as client",
+      method: "GET",
+      url: "/api/v1/users",
+      headers: trustedHeaders(client, "/api/v1/users"),
+      expect: 403
+    },
+    // 404 — authenticated and authorized but resource does not exist
+    {
+      label: "404 /mindtrack/clients/<missing>/timeline",
+      method: "GET",
+      url: "/api/v1/mindtrack/clients/00000000000000000000000000000000/timeline",
+      headers: trustedHeaders(
+        admin,
+        "/api/v1/mindtrack/clients/00000000000000000000000000000000/timeline"
+      ),
+      expect: 404
+    },
+    {
+      label: "404 attachment for unknown entry",
+      method: "GET",
+      url: "/api/v1/mindtrack/entries/00000000000000000000000000000000/attachments/deadbeef",
+      headers: trustedHeaders(
+        admin,
+        "/api/v1/mindtrack/entries/00000000000000000000000000000000/attachments/deadbeef"
+      ),
+      expect: 404
+    }
+  ];
+
+  for (const row of rows) {
+    const res = await fetch(`${BASE}${row.url}`, {
+      method: row.method,
+      headers: row.headers
+    });
+    assert.equal(
+      res.status,
+      row.expect,
+      `${row.label}: expected ${row.expect}, got ${res.status}`
+    );
+  }
+});

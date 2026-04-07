@@ -19,6 +19,46 @@ function tokenize(value) {
     .filter((token) => token.length > 1);
 }
 
+// Escape every regex metacharacter so a user-supplied search query can
+// never inject regex syntax into a MongoDB $regex filter. Without this
+// guard a query like `(.*)+` would either inject untrusted regex syntax
+// (changing the semantics of the search) or trigger catastrophic
+// backtracking on the Mongo side. We also cap the query length here so
+// pathological repeated tokens cannot trip the regex engine even after
+// escaping.
+const REGEX_META = /[.*+?^${}()|[\]\\]/g;
+const SAFE_QUERY_MAX_LENGTH = 200;
+function escapeRegex(value) {
+  return String(value).replace(REGEX_META, "\\$&");
+}
+export function buildSafeQueryRegex(rawQuery) {
+  if (rawQuery === undefined || rawQuery === null) {
+    return null;
+  }
+  const trimmed = String(rawQuery).trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.length > SAFE_QUERY_MAX_LENGTH) {
+    throw new AppError(
+      `search query exceeds ${SAFE_QUERY_MAX_LENGTH} characters`,
+      400,
+      "SEARCH_QUERY_TOO_LONG"
+    );
+  }
+  // Reject NUL bytes and control characters outright — they have no
+  // legitimate use in a free-text search and would otherwise create odd
+  // regex matching behavior.
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new AppError(
+      "search query contains invalid control characters",
+      400,
+      "SEARCH_QUERY_INVALID"
+    );
+  }
+  return new RegExp(escapeRegex(trimmed), "i");
+}
+
 function maskPhone(value) {
   if (!value) {
     return "";
@@ -605,7 +645,10 @@ export class MindTrackService {
 
     const normalizedQuery = String(query || "").trim();
     const terms = tokenize(normalizedQuery);
-    const regex = normalizedQuery ? new RegExp(normalizedQuery, "i") : null;
+    // The regex used for Mongo $regex matching MUST be built via the
+    // safe escaping helper. Anything else exposes the search infra to
+    // regex injection and catastrophic-backtracking DoS.
+    const regex = buildSafeQueryRegex(normalizedQuery);
     const entries = await this.mindTrackRepository.searchEntries({
       accessFilter,
       queryRegex: regex,

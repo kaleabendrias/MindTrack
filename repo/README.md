@@ -263,26 +263,88 @@ Expected behavior:
 
 ## Testing
 
-Mandatory root test directories:
+> **Canonical entry point: `./run_tests.sh`**
+>
+> The full verification suite for this repository is `./run_tests.sh` from
+> the project root. Verifiers, reviewers, and CI MUST use this script —
+> it is the only supported, fully-containerized path that brings up a
+> clean stack and exercises every test family in the same configuration
+> the production runtime uses.
 
-- `unit_tests`
-- `API_tests`
+### Purpose
 
-Run all suites with one command:
+`./run_tests.sh` verifies that the application meets every architectural
+and security gate the design demands, end-to-end, against the actual
+Docker Compose stack. It is the single entry point that:
+
+1. Generates ephemeral, per-run secrets (`AUTH_TOKEN_SECRET`,
+   `REFRESH_TOKEN_SECRET`, `REQUEST_SIGNING_SECRET`,
+   `DATA_ENCRYPTION_KEY`) — never written to disk.
+2. Tears down any previous stack state with `docker compose down -v` so
+   that database, attachment, and rate-limit volumes start empty.
+3. Brings the stack up via `docker compose up -d --build` so backend,
+   frontend, MongoDB, the seed job, and the test runners are all built
+   from the current source tree.
+4. Executes the four test families in order, failing fast on the first
+   non-zero exit.
+
+### Scope
+
+`./run_tests.sh` runs four families of tests, in this order:
+
+| # | Family               | Location              | What it covers |
+|---|----------------------|-----------------------|----------------|
+| 1 | Backend unit tests   | `unit_tests/backend`  | Pure-domain logic: password policy, account lockout, rate-limit math, request-signing nonce ledger, restore rollback, idempotency concurrency, regex-escape safety. |
+| 2 | Frontend unit tests  | `unit_tests/frontend` | React/JS unit tests for session isolation, recent-search storage scoping, and shared UI helpers. |
+| 3 | API integration tests| `API_tests`           | Live HTTP integration against the running backend: auth flows, request signing, replay/CSRF, role boundaries, validator boundaries, restore boundaries, signed attachment download, search regex injection, 401/403/404 matrix. |
+| 4 | E2E tests            | `e2e/tests`           | Lightweight UI smoke tests against the running frontend container, including the assertion that removed routes (e.g. `/api/v1/work-orders`) return 404. |
+
+Each family runs inside a dedicated container (`test-runner` for unit +
+API, `e2e-runner` for E2E) so the host filesystem and host node version
+are never relied on.
+
+### Execution boundaries
+
+These boundaries are deliberate and verifiers should NOT bypass them:
+
+- The script is the **only** supported way to run the tests. Per-file
+  invocations like `node --test API_tests/...` are useful for local
+  debugging but skip the clean-state guarantees and rate-limit reset
+  that the integration assertions depend on.
+- Tests run **inside containers** (`test-runner` and `e2e-runner`),
+  not on the host. The host node toolchain is irrelevant.
+- The stack is **wiped between runs** (`docker compose down -v`). Any
+  state in `mongo-data`, `backend-data`, or rate-limit buckets from
+  previous runs is removed before each invocation. Do not run the
+  script against a stack you intend to keep.
+- `SEED_REQUIRE_ROTATION=false` is set **only for the test stack** so
+  the integration suites can authenticate seeded users directly. This
+  env var must NEVER be set in production.
+- The script exits non-zero on the first failing family. Subsequent
+  families do not run, so the first failure is the actionable signal.
+
+### How to run
+
+From the repository root:
 
 ```bash
 ./run_tests.sh
 ```
 
-This command:
+That is the canonical path. There are no flags, no per-test toggles,
+and no environment prerequisites beyond Docker Compose and `openssl`
+(used to generate the ephemeral secrets).
 
-- starts the stack in containers
-- runs backend unit tests
-- runs frontend unit tests
-- runs API/integration tests
-- exits nonzero on failure
+If you need to debug a single failing test interactively, you may use
+`docker compose exec test-runner sh -lc "node --test <path>"` against
+an already-running stack — but the authoritative pass/fail signal is
+still `./run_tests.sh` from a clean stack.
 
-The automated suites target the high-risk acceptance surface of the prompt, including role flows, auth/security boundaries, validation/error paths, search/filter/sort/trending/history clear, attachment constraints and dedupe, governance/retention/backup lifecycle, and critical-write idempotency.
+### What is NOT covered
+
+`./run_tests.sh` does not run benchmarks, fuzzers, or load tests, and
+does not execute against any external infrastructure. It is the
+correctness gate, not a performance gate.
 
 ## Verification matrix
 

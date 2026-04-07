@@ -1,7 +1,38 @@
-import { attachmentDownloadUrl } from "../../api/mindTrackApi.js";
+import { useState } from "react";
+import { downloadAttachment } from "../../api/mindTrackApi.js";
 import { StatusBadge } from "./StatusBadge.jsx";
 
 export function TimelineItem({ entry, actions }) {
+  const [downloadError, setDownloadError] = useState(null);
+
+  // Click handler that performs a signed binary fetch and then turns the
+  // returned Blob into an in-memory object URL the browser can open or
+  // save. The plain `<a href="...">` approach used previously could not
+  // attach the HMAC signature headers required by the protected /api/v1
+  // chain and was rejected with 401.
+  const handleDownload = async (att) => {
+    setDownloadError(null);
+    try {
+      const { blob, fileName } = await downloadAttachment(entry._id, att.fingerprint);
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const tempAnchor = document.createElement("a");
+        tempAnchor.href = objectUrl;
+        tempAnchor.download = fileName;
+        tempAnchor.rel = "noopener";
+        document.body.appendChild(tempAnchor);
+        tempAnchor.click();
+        document.body.removeChild(tempAnchor);
+      } finally {
+        // Defer revocation slightly so the browser has time to start
+        // streaming the click target before the blob disappears.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+    } catch (err) {
+      setDownloadError(err?.code || err?.message || "download failed");
+    }
+  };
+
   return (
     <article className="timeline-item">
       <header>
@@ -25,13 +56,13 @@ export function TimelineItem({ entry, actions }) {
             {entry.attachments.map((att) => (
               <li key={att.fingerprint}>
                 {att.storagePath ? (
-                  <a
-                    href={attachmentDownloadUrl(entry._id, att.fingerprint)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    className="attachment-download-button"
+                    onClick={() => handleDownload(att)}
                   >
                     {att.name}
-                  </a>
+                  </button>
                 ) : (
                   <span>{att.name} (metadata only)</span>
                 )}
@@ -39,6 +70,11 @@ export function TimelineItem({ entry, actions }) {
               </li>
             ))}
           </ul>
+          {downloadError ? (
+            <p className="attachment-download-error" role="alert">
+              Attachment download failed: {downloadError}
+            </p>
+          ) : null}
         </div>
       ) : null}
       {actions ? <div className="timeline-actions">{actions}</div> : null}

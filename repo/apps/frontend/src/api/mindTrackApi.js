@@ -1,4 +1,4 @@
-import { apiRequest } from "./client.js";
+import { apiBinaryRequest, apiRequest } from "./client.js";
 
 export async function fetchClients() {
   const response = await apiRequest("/mindtrack/clients");
@@ -120,8 +120,26 @@ export async function updateClientProfile(clientId, payload) {
   return response.data;
 }
 
-export function attachmentDownloadUrl(entryId, fingerprint) {
-  return `/api/v1/mindtrack/entries/${entryId}/attachments/${encodeURIComponent(fingerprint)}`;
+/**
+ * Fetch an attachment binary through the same signed request chain as
+ * every other authenticated call. The previous implementation returned
+ * a plain `<a href="...">` URL that the browser would dereference
+ * without signed headers — and the protected /api/v1 chain would
+ * (correctly) reject the request as 401 SIGNATURE_REQUIRED. We now
+ * issue a JS-driven fetch and hand the caller a Blob plus its
+ * suggested filename so the UI can drive a download or preview.
+ */
+export async function downloadAttachment(entryId, fingerprint) {
+  const response = await apiBinaryRequest(
+    `/mindtrack/entries/${entryId}/attachments/${encodeURIComponent(fingerprint)}`,
+    { method: "GET" }
+  );
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
+  const dispositionHeader = response.headers.get("content-disposition") || "";
+  const filenameMatch = dispositionHeader.match(/filename="?([^";]+)"?/i);
+  const fileName = filenameMatch ? filenameMatch[1] : `attachment-${fingerprint}`;
+  const blob = await response.blob();
+  return { blob, contentType, fileName };
 }
 
 export async function updateClientGovernance(clientId, payload) {

@@ -56,9 +56,14 @@ export class MongoMindTrackRepository {
   }
 
   async findPotentialDuplicateClients({ name, dob }) {
+    // The `name` value reaches us from operator/admin input and was
+    // previously interpolated directly into a RegExp, exposing the dup
+    // detection path to regex injection. Escape every metacharacter
+    // before constructing the pattern.
+    const escapedName = String(name || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return MindTrackClientModel.find({
       mergedIntoClientId: null,
-      $or: [{ name: new RegExp(name, "i") }, { dob: new Date(dob) }]
+      $or: [{ name: new RegExp(escapedName, "i") }, { dob: new Date(dob) }]
     })
       .sort({ updatedAt: -1 })
       .limit(20)
