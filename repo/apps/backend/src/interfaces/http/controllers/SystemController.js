@@ -78,14 +78,35 @@ export class SystemController {
     res.status(200).json({ data });
   };
 
-  securityFlags = async (req, res) => {
+  // Self-scoped: any authenticated user can fetch their own security flags.
+  // Kept intentionally for the existing /my-security-flags route.
+  mySecurityFlags = async (req, res) => {
     const data = await this.systemService.securityFlags(req.user.id);
     res.status(200).json({ data });
   };
 
-  mySecurityFlags = async (req, res) => {
-    const data = await this.systemService.securityFlags(req.user.id);
-    res.status(200).json({ data });
+  // Globally scoped admin view used for platform-wide anomaly monitoring.
+  // Supports filtering by user, session, rule code, and timestamp window.
+  // Backed by the auditRead permission via the route layer.
+  securityFlags = async (req, res) => {
+    const data = await this.systemService.listSecurityFlagsAdmin({
+      userId: req.query.userId,
+      sessionId: req.query.sessionId,
+      ruleCode: req.query.ruleCode,
+      from: req.query.from,
+      to: req.query.to,
+      limit: req.query.limit
+    });
+    res.status(200).json({
+      data,
+      filters: {
+        userId: req.query.userId || null,
+        sessionId: req.query.sessionId || null,
+        ruleCode: req.query.ruleCode || null,
+        from: req.query.from || null,
+        to: req.query.to || null
+      }
+    });
   };
 
   auditImmutabilityCheck = async (_req, res) => {

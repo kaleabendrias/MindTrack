@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { AuditLogModel } from "../persistence/models/AuditLogModel.js";
 import { FacilityModel } from "../persistence/models/FacilityModel.js";
 import { MindTrackClientModel } from "../persistence/models/MindTrackClientModel.js";
@@ -48,30 +49,70 @@ export class MongoSystemRepository {
   }
 
   async restoreCollections(snapshot) {
+    // Audit logs are intentionally excluded from restore operations to preserve
+    // their strict immutability and maintain a continuous, append-only ledger.
+    // The full restore sequence runs inside a single MongoDB transaction so
+    // that any partial failure rolls back cleanly and the system never enters
+    // an inconsistent state.
+    const session = await mongoose.startSession();
+    try {
+      let transactional = true;
+      try {
+        await session.withTransaction(async () => {
+          await this._applyRestore(snapshot, session);
+        });
+      } catch (err) {
+        // Standalone Mongo (non-replica-set) deployments cannot run
+        // multi-document transactions. Fall back to a best-effort sequential
+        // restore that still skips audit logs and reports its mode.
+        const message = err && err.message ? err.message : "";
+        const code = err && err.codeName ? err.codeName : "";
+        const standalone =
+          message.includes("Transaction numbers are only allowed on a replica set") ||
+          message.includes("transaction") ||
+          code === "IllegalOperation" ||
+          code === "NotImplemented";
+        if (!standalone) {
+          throw err;
+        }
+        transactional = false;
+        await this._applyRestore(snapshot, null);
+      }
+      return { transactional };
+    } finally {
+      session.endSession();
+    }
+  }
+
+  async _applyRestore(snapshot, session) {
+    const opts = session ? { session } : undefined;
     if (snapshot.users?.length) {
-      await UserModel.deleteMany({});
-      await UserModel.insertMany(snapshot.users);
+      await UserModel.deleteMany({}, opts);
+      await UserModel.insertMany(snapshot.users, opts);
     }
     if (snapshot.clients?.length) {
-      await MindTrackClientModel.deleteMany({});
-      await MindTrackClientModel.insertMany(snapshot.clients);
+      await MindTrackClientModel.deleteMany({}, opts);
+      await MindTrackClientModel.insertMany(snapshot.clients, opts);
     }
     if (snapshot.entries?.length) {
-      await MindTrackEntryModel.deleteMany({});
-      await MindTrackEntryModel.insertMany(snapshot.entries);
+      await MindTrackEntryModel.deleteMany({}, opts);
+      await MindTrackEntryModel.insertMany(snapshot.entries, opts);
     }
     if (snapshot.facilities?.length) {
-      await FacilityModel.deleteMany({});
-      await FacilityModel.insertMany(snapshot.facilities);
+      await FacilityModel.deleteMany({}, opts);
+      await FacilityModel.insertMany(snapshot.facilities, opts);
     }
     if (snapshot.settings?.length) {
-      await SystemSettingsModel.deleteMany({});
-      await SystemSettingsModel.insertMany(snapshot.settings);
+      await SystemSettingsModel.deleteMany({}, opts);
+      await SystemSettingsModel.insertMany(snapshot.settings, opts);
     }
-    if (snapshot.auditLogs?.length) {
-      await AuditLogModel.collection.deleteMany({});
-      await AuditLogModel.collection.insertMany(snapshot.auditLogs);
-    }
+    // NOTE: snapshot.auditLogs is intentionally NOT restored. The auditLogSchema
+    // is append-only — overwriting it would break the historical chain of
+    // custody for who/what/when/why and is forbidden by the immutability rule.
+  }
+
+  async countAuditLogs() {
+    return AuditLogModel.estimatedDocumentCount();
   }
 
   async findOneAuditLog() {

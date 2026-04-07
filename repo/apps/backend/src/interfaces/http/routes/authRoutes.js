@@ -17,7 +17,14 @@ export function createAuthRoutes(authController, authenticate) {
     validateRequest(validateRefreshRequest),
     asyncHandler(authController.refresh)
   );
-  router.get("/security-questions", asyncHandler(authController.securityQuestions));
+  // Rate limited to prevent username enumeration via repeated probing.
+  // The handler also returns a generic payload regardless of username
+  // validity (see AuthService.getSecurityQuestions).
+  router.get(
+    "/security-questions",
+    recoveryRateLimiter,
+    asyncHandler(authController.securityQuestions)
+  );
   router.post(
     "/recover-password",
     recoveryRateLimiter,

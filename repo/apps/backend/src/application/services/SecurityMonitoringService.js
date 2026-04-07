@@ -113,4 +113,33 @@ export class SecurityMonitoringService {
   async listFlagsForUser(userId) {
     return this.securityFlagRepository.listByUserId(userId);
   }
+
+  async listFlagsAdmin({ userId, sessionId, ruleCode, from, to, limit } = {}) {
+    const filters = {};
+    if (userId && typeof userId === "string") {
+      filters.userId = userId.trim();
+    }
+    if (sessionId && typeof sessionId === "string") {
+      filters.sessionId = sessionId.trim();
+    }
+    if (ruleCode && typeof ruleCode === "string") {
+      filters.ruleCode = ruleCode.trim();
+    }
+    if (from) {
+      const parsed = new Date(from);
+      if (!Number.isNaN(parsed.getTime())) {
+        filters.from = parsed;
+      }
+    }
+    if (to) {
+      const parsed = new Date(to);
+      if (!Number.isNaN(parsed.getTime())) {
+        filters.to = parsed;
+      }
+    }
+    if (limit !== undefined) {
+      filters.limit = limit;
+    }
+    return this.securityFlagRepository.listFiltered(filters);
+  }
 }

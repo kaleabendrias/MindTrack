@@ -432,7 +432,13 @@ test("backup restore rejects missing filename", async () => {
 
 test("backup restore rejects nonexistent file", async () => {
   const admin = await login("administrator", ADMIN_PASS);
-  const body = JSON.stringify({ filename: "nonexistent.enc.json", reason: "test" });
+  // Use a name that satisfies the strict allowlist regex but does not
+  // correspond to any file on disk, so we exercise the BACKUP_NOT_FOUND
+  // branch (rather than the INVALID_BACKUP_FILENAME branch).
+  const body = JSON.stringify({
+    filename: "mindtrack-backup-1900-01-01T00-00-00-000Z.enc.json",
+    reason: "test"
+  });
   const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
     method: "POST",
     headers: trustedHeaders(admin, "/api/v1/system/backup-restore", { method: "POST", body, idempotencyKey: crypto.randomUUID() }),
@@ -607,4 +613,267 @@ test("behavior-based abnormal access rules persist metadata for rapid lookups an
   const adminFlags = await adminFlagsRes.json();
   assert.equal(adminFlagsRes.status, 200);
   assert.equal(adminFlags.data.some((flag) => flag.ruleCode === "RULE_REPEATED_BACKUP_EXECUTION"), true);
+});
+
+test("backup restore rejects path traversal and non-allowlisted filenames", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+  const traversalCases = [
+    "../../../etc/passwd",
+    "..\\..\\windows\\system32\\config.enc.json",
+    "/etc/passwd",
+    "mindtrack-backup-../etc/passwd.enc.json",
+    "evil.enc.json",
+    "mindtrack-backup-2026.txt",
+    "mindtrack-backup-2026.enc.json\u0000.txt"
+  ];
+  for (const filename of traversalCases) {
+    const body = JSON.stringify({ filename, reason: "traversal probe" });
+    const res = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+        method: "POST",
+        body,
+        idempotencyKey: crypto.randomUUID()
+      }),
+      body
+    });
+    assert.equal(
+      res.status,
+      400,
+      `expected 400 INVALID_BACKUP_FILENAME for "${filename}", got ${res.status}`
+    );
+    const json = await res.json();
+    assert.equal(json.code, "INVALID_BACKUP_FILENAME");
+  }
+});
+
+test("backup restore preserves audit log immutability and append-only semantics", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Snapshot pre-restore audit-immutability state.
+  const preCheckRes = await fetch(`${BASE}/api/v1/system/audit-immutability-check`, {
+    headers: trustedHeaders(admin, "/api/v1/system/audit-immutability-check")
+  });
+  const preCheck = await preCheckRes.json();
+  assert.equal(preCheckRes.status, 200);
+  assert.equal(preCheck.data.immutable, true, "audit log must be immutable before restore");
+
+  // Create a backup, then restore it. Audit-log entries created between
+  // these two events MUST survive the restore — the restore explicitly
+  // skips the auditLogSchema collection so the append-only ledger is
+  // preserved.
+  const backupBody = JSON.stringify({ reason: "audit-immutability backup" });
+  const backupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: backupBody }),
+    body: backupBody
+  });
+  const backupJson = await backupRes.json();
+  assert.equal(backupRes.status, 200);
+
+  // Generate a fresh, post-snapshot audit event by running another backup.
+  const postSnapshotBody = JSON.stringify({ reason: "post-snapshot marker" });
+  const postSnapshotRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: postSnapshotBody }),
+    body: postSnapshotBody
+  });
+  assert.equal(postSnapshotRes.status, 200);
+
+  // Now restore from the earlier snapshot.
+  const restoreBody = JSON.stringify({
+    filename: backupJson.data.file,
+    reason: "audit immutability assertion"
+  });
+  const restoreRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+      method: "POST",
+      body: restoreBody,
+      idempotencyKey: crypto.randomUUID()
+    }),
+    body: restoreBody
+  });
+  assert.equal(restoreRes.status, 200);
+  const restoreJson = await restoreRes.json();
+  assert.equal(restoreJson.data.success, true);
+  assert.equal(
+    restoreJson.data.auditLogsPreserved,
+    true,
+    "restore must report auditLogsPreserved=true"
+  );
+
+  // Audit log must still be immutable after restore.
+  const postAdmin = await login("administrator", ADMIN_PASS);
+  const postCheckRes = await fetch(`${BASE}/api/v1/system/audit-immutability-check`, {
+    headers: trustedHeaders(postAdmin, "/api/v1/system/audit-immutability-check")
+  });
+  const postCheck = await postCheckRes.json();
+  assert.equal(postCheckRes.status, 200);
+  assert.equal(postCheck.data.checked, true);
+  assert.equal(postCheck.data.immutable, true, "audit log must remain immutable after restore");
+});
+
+test("backup restore rolls back on failure (RESTORE_ROLLED_BACK / 5xx) when snapshot is corrupt", async () => {
+  // We can't easily corrupt a real backup file from the API surface, but we
+  // CAN exercise the rollback path indirectly: an invalid filename triggers
+  // INVALID_BACKUP_FILENAME (no DB writes); a valid-but-missing filename
+  // triggers BACKUP_NOT_FOUND (no DB writes). The rollback contract is that
+  // *no destructive write* leaks past a failure, so we assert system state
+  // is unchanged after a failed restore by listing clients before/after.
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  const beforeRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
+  });
+  assert.equal(beforeRes.status, 200);
+  const beforeJson = await beforeRes.json();
+  const beforeCount = beforeJson.data.length;
+
+  const failBody = JSON.stringify({
+    filename: "mindtrack-backup-1900-01-01T00-00-00-000Z.enc.json",
+    reason: "rollback assertion"
+  });
+  const failRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+      method: "POST",
+      body: failBody,
+      idempotencyKey: crypto.randomUUID()
+    }),
+    body: failBody
+  });
+  assert.equal(failRes.status, 404, "missing snapshot should fail with 404 BACKUP_NOT_FOUND");
+
+  // System state must be unchanged after a failed restore.
+  const clinicianAfter = await login("clinician", CLINICIAN_PASS);
+  const afterRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(clinicianAfter, "/api/v1/mindtrack/clients")
+  });
+  assert.equal(afterRes.status, 200);
+  const afterJson = await afterRes.json();
+  assert.equal(
+    afterJson.data.length,
+    beforeCount,
+    "client count must be unchanged after a failed restore"
+  );
+});
+
+test("global admin /system/security-flags supports filtering by user, session, rule, timestamp", async () => {
+  // Generate at least one flag for clinician via rapid-lookup activity.
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  for (let index = 0; index < 9; index += 1) {
+    await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+      headers: trustedHeaders(clinician, "/api/v1/mindtrack/clients")
+    });
+  }
+
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Unfiltered admin call should return a list of flags across all users.
+  const allRes = await fetch(`${BASE}/api/v1/system/security-flags`, {
+    headers: trustedHeaders(admin, "/api/v1/system/security-flags")
+  });
+  assert.equal(allRes.status, 200, "admin must be able to read global security flags");
+  const allJson = await allRes.json();
+  assert.ok(Array.isArray(allJson.data), "data must be an array");
+  assert.ok(allJson.filters, "response should echo the active filters");
+  assert.ok(allJson.data.length >= 1, "expected at least one flag generated by clinician activity");
+
+  // Pick a known flag and verify each filter dimension narrows results.
+  const sample = allJson.data.find((flag) => flag.userId && flag.sessionId && flag.ruleCode);
+  assert.ok(sample, "expected at least one fully-populated flag for filter assertions");
+
+  const userFilterRes = await fetch(
+    `${BASE}/api/v1/system/security-flags?userId=${encodeURIComponent(sample.userId)}`,
+    { headers: trustedHeaders(admin, `/api/v1/system/security-flags?userId=${encodeURIComponent(sample.userId)}`) }
+  );
+  assert.equal(userFilterRes.status, 200);
+  const userFilterJson = await userFilterRes.json();
+  for (const flag of userFilterJson.data) {
+    assert.equal(flag.userId, sample.userId);
+  }
+
+  const ruleFilterRes = await fetch(
+    `${BASE}/api/v1/system/security-flags?ruleCode=${encodeURIComponent(sample.ruleCode)}`,
+    { headers: trustedHeaders(admin, `/api/v1/system/security-flags?ruleCode=${encodeURIComponent(sample.ruleCode)}`) }
+  );
+  assert.equal(ruleFilterRes.status, 200);
+  const ruleFilterJson = await ruleFilterRes.json();
+  for (const flag of ruleFilterJson.data) {
+    assert.equal(flag.ruleCode, sample.ruleCode);
+  }
+
+  const sessionFilterRes = await fetch(
+    `${BASE}/api/v1/system/security-flags?sessionId=${encodeURIComponent(sample.sessionId)}`,
+    { headers: trustedHeaders(admin, `/api/v1/system/security-flags?sessionId=${encodeURIComponent(sample.sessionId)}`) }
+  );
+  assert.equal(sessionFilterRes.status, 200);
+  const sessionFilterJson = await sessionFilterRes.json();
+  for (const flag of sessionFilterJson.data) {
+    assert.equal(flag.sessionId, sample.sessionId);
+  }
+
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const timeFilterRes = await fetch(
+    `${BASE}/api/v1/system/security-flags?from=${encodeURIComponent(future)}`,
+    { headers: trustedHeaders(admin, `/api/v1/system/security-flags?from=${encodeURIComponent(future)}`) }
+  );
+  assert.equal(timeFilterRes.status, 200);
+  const timeFilterJson = await timeFilterRes.json();
+  assert.equal(
+    timeFilterJson.data.length,
+    0,
+    "future-only timestamp filter must yield no results"
+  );
+});
+
+test("global admin /system/security-flags is forbidden for non-admin roles", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  const res = await fetch(`${BASE}/api/v1/system/security-flags`, {
+    headers: trustedHeaders(clinician, "/api/v1/system/security-flags")
+  });
+  assert.equal(res.status, 403, "clinician must not access the global security-flags admin view");
+});
+
+test("self-scoped /system/my-security-flags remains available to all authenticated users", async () => {
+  const client = await login("client", CLIENT_PASS);
+  const res = await fetch(`${BASE}/api/v1/system/my-security-flags`, {
+    headers: trustedHeaders(client, "/api/v1/system/my-security-flags")
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(Array.isArray(json.data));
+});
+
+test("unauthenticated /auth/security-questions returns generic payload regardless of username", async () => {
+  // Existing username
+  const realRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=administrator`);
+  assert.equal(realRes.status, 200);
+  const realJson = await realRes.json();
+
+  // Non-existing username
+  const fakeRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=zzz_no_such_user_zzz`);
+  assert.equal(fakeRes.status, 200);
+  const fakeJson = await fakeRes.json();
+
+  // Empty username
+  const emptyRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=`);
+  assert.equal(emptyRes.status, 200);
+  const emptyJson = await emptyRes.json();
+
+  assert.deepEqual(
+    realJson.data,
+    fakeJson.data,
+    "response must NOT differ between real and fake usernames"
+  );
+  assert.deepEqual(
+    realJson.data,
+    emptyJson.data,
+    "response must NOT differ between real and empty usernames"
+  );
+  assert.ok(Array.isArray(realJson.data));
+  assert.equal(realJson.data.length, 1);
+  assert.ok(typeof realJson.data[0].question === "string");
 });

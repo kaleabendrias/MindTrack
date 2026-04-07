@@ -27,6 +27,36 @@ function encryptBuffer(buffer) {
   });
 }
 
+// Strict allowlist for restore filenames. Backup files are produced by
+// runBackupNow() with the format `mindtrack-backup-<ISO timestamp>.enc.json`,
+// so any input that does not match this pattern is rejected before any
+// filesystem access. Together with canonical-path containment below, this
+// blocks path traversal (`..`, absolute paths, NUL bytes) and arbitrary file
+// reads outside the configured backup directory.
+const BACKUP_FILENAME_PATTERN = /^mindtrack-backup-[A-Za-z0-9-]+\.enc\.json$/;
+
+function resolveBackupPath(filename, destination) {
+  if (typeof filename !== "string" || filename.length === 0 || filename.length > 200) {
+    throw new AppError("invalid backup filename", 400, "INVALID_BACKUP_FILENAME");
+  }
+  // Reject any path separators or traversal markers outright before regex.
+  if (filename.includes("/") || filename.includes("\\") || filename.includes("\0") || filename.includes("..")) {
+    throw new AppError("invalid backup filename", 400, "INVALID_BACKUP_FILENAME");
+  }
+  if (!BACKUP_FILENAME_PATTERN.test(filename)) {
+    throw new AppError("invalid backup filename", 400, "INVALID_BACKUP_FILENAME");
+  }
+  const baseDir = path.resolve(destination);
+  const candidate = path.resolve(baseDir, filename);
+  // Canonical containment: the resolved candidate must live directly under
+  // the canonical backup directory. Anything else is a traversal attempt.
+  const baseWithSep = baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep;
+  if (!candidate.startsWith(baseWithSep) || path.dirname(candidate) !== baseDir) {
+    throw new AppError("invalid backup filename", 400, "INVALID_BACKUP_FILENAME");
+  }
+  return candidate;
+}
+
 function decryptBuffer(encryptedJson) {
   const parsed = typeof encryptedJson === "string" ? JSON.parse(encryptedJson) : encryptedJson;
   const iv = Buffer.from(parsed.iv, "base64");
@@ -378,7 +408,7 @@ export class SystemService {
       userId: actor.id,
       action: `restore:${filename}`,
       handler: async () => {
-        const fullPath = path.join(backupState.destination, filename);
+        const fullPath = resolveBackupPath(filename, backupState.destination);
         let raw;
         try {
           raw = await fs.readFile(fullPath, "utf8");
@@ -389,7 +419,28 @@ export class SystemService {
         const decrypted = decryptBuffer(raw);
         const snapshot = JSON.parse(decrypted.toString("utf8"));
 
-        await this.systemRepository.restoreCollections(snapshot);
+        let restoreResult;
+        try {
+          restoreResult = await this.systemRepository.restoreCollections(snapshot);
+        } catch (err) {
+          // Restore is wrapped in a MongoDB transaction; on failure the
+          // transaction rolls back so the system stays in its prior state.
+          // Record the rollback event in the (still-immutable) audit log.
+          await this.auditService.logAction({
+            actorUserId: actor.id,
+            action: "update",
+            entityType: "backup_restore",
+            entityId: filename,
+            reason: `${reason} (rolled back: ${err.message})`,
+            before: { filename, generatedAt: snapshot.generatedAt },
+            after: null
+          });
+          throw new AppError(
+            `restore rolled back: ${err.message}`,
+            500,
+            "RESTORE_ROLLED_BACK"
+          );
+        }
 
         await this.auditService.logAction({
           actorUserId: actor.id,
@@ -398,7 +449,12 @@ export class SystemService {
           entityId: filename,
           reason,
           before: null,
-          after: { filename, generatedAt: snapshot.generatedAt }
+          after: {
+            filename,
+            generatedAt: snapshot.generatedAt,
+            transactional: restoreResult?.transactional !== false,
+            auditLogsPreserved: true
+          }
         });
 
         return {
@@ -406,7 +462,9 @@ export class SystemService {
           body: {
             success: true,
             filename,
-            generatedAt: snapshot.generatedAt
+            generatedAt: snapshot.generatedAt,
+            transactional: restoreResult?.transactional !== false,
+            auditLogsPreserved: true
           }
         };
       }
@@ -415,5 +473,9 @@ export class SystemService {
 
   async securityFlags(userId) {
     return this.securityMonitoringService.listFlagsForUser(userId);
+  }
+
+  async listSecurityFlagsAdmin(filters) {
+    return this.securityMonitoringService.listFlagsAdmin(filters || {});
   }
 }

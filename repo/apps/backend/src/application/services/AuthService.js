@@ -270,14 +270,26 @@ export class AuthService {
   }
 
   async getSecurityQuestions(username) {
-    const normalizedUsername = User.normalizeUsername(username);
-    const user = await this.userRepository.findByUsername(normalizedUsername);
-    if (!user) {
-      throw new AppError("user not found", 404, "USER_NOT_FOUND");
+    // Account enumeration mitigation: this endpoint is unauthenticated, so it
+    // must NOT distinguish between an existing and a non-existing username.
+    // Always return the same generic payload, regardless of whether the
+    // supplied username matches a real account. Real questions are still
+    // required at /recover-password, which is rate limited and uses
+    // constant-time answer verification.
+    const generic = [{ question: "What is your account recovery question?" }];
+    if (typeof username !== "string" || !username.trim()) {
+      return generic;
     }
-    return (user.securityQuestions || []).map((entry) => ({
-      question: entry.question
-    }));
+    let normalizedUsername;
+    try {
+      normalizedUsername = User.normalizeUsername(username);
+    } catch (_err) {
+      return generic;
+    }
+    // Touch the repository so that valid and invalid usernames have similar
+    // timing characteristics, but never branch the response on the result.
+    await this.userRepository.findByUsername(normalizedUsername).catch(() => null);
+    return generic;
   }
 
   async recoverPasswordWithQuestion({ username, question, answer, newPassword }) {
