@@ -853,38 +853,51 @@ test("self-scoped /system/my-security-flags remains available to all authenticat
   assert.ok(Array.isArray(json.data));
 });
 
-test("unauthenticated /auth/security-questions returns user-specific question for real users and generic for others", async () => {
-  // Existing username — should return the user's configured security question(s)
+test("unauthenticated /auth/security-questions always returns identical generic challenge — never user-specific data", async () => {
+  // Security requirement: the endpoint must NEVER reveal whether a username
+  // exists or which question that account uses. Every caller — regardless of
+  // whether the username is real, fake, or empty — must receive the same
+  // uniform generic challenge label so that automated enumeration probing
+  // cannot distinguish a registered account from a non-existent one.
+  const GENERIC_LABEL = "What is your account recovery question?";
+
+  // Real, registered username
   const realRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=administrator`);
   assert.equal(realRes.status, 200);
   const realJson = await realRes.json();
-  assert.ok(Array.isArray(realJson.data));
-  assert.ok(realJson.data.length >= 1, "real user should have at least one security question");
-  assert.ok(typeof realJson.data[0].question === "string");
-  // The question should be the user's actual configured question, not the generic fallback
-  assert.notEqual(realJson.data[0].question, "What is your account recovery question?",
-    "real user should receive their configured question, not the generic fallback");
+  assert.ok(Array.isArray(realJson.data), "response must be an array");
+  assert.equal(realJson.data.length, 1, "exactly one generic entry");
+  assert.equal(realJson.data[0].question, GENERIC_LABEL,
+    "real user must receive the generic label, not their configured question");
 
-  // Non-existing username — should return generic fallback
+  // Non-existent username
   const fakeRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=zzz_no_such_user_zzz`);
   assert.equal(fakeRes.status, 200);
   const fakeJson = await fakeRes.json();
   assert.ok(Array.isArray(fakeJson.data));
   assert.equal(fakeJson.data.length, 1);
-  assert.equal(fakeJson.data[0].question, "What is your account recovery question?");
+  assert.equal(fakeJson.data[0].question, GENERIC_LABEL,
+    "non-existent user must receive the same generic label");
 
-  // Empty username — should return generic fallback
+  // Empty username
   const emptyRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=`);
   assert.equal(emptyRes.status, 200);
   const emptyJson = await emptyRes.json();
-  assert.deepEqual(fakeJson.data, emptyJson.data,
-    "fake and empty usernames must both return the same generic fallback");
+  assert.equal(emptyJson.data[0].question, GENERIC_LABEL,
+    "empty username must receive the same generic label");
 
-  // All responses must have the same shape: array of { question: string }
+  // All three responses must be byte-for-byte identical so an observer
+  // cannot distinguish a real account from a non-existent one.
+  assert.deepEqual(realJson.data, fakeJson.data,
+    "real and fake username responses must be identical");
+  assert.deepEqual(fakeJson.data, emptyJson.data,
+    "fake and empty username responses must be identical");
+
+  // Shape guard: entries must only expose the question label, never answer hashes.
   for (const dataset of [realJson.data, fakeJson.data, emptyJson.data]) {
     for (const entry of dataset) {
       assert.ok(typeof entry.question === "string", "each entry must have a question string");
-      assert.equal(Object.keys(entry).length, 1, "entries must only expose the question text, not answer hashes");
+      assert.equal(Object.keys(entry).length, 1, "entries must not expose answer hashes or any other field");
     }
   }
 });

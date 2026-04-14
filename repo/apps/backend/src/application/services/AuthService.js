@@ -322,28 +322,15 @@ export class AuthService {
     });
   }
 
-  async getSecurityQuestions(username) {
-    // Two-stage recovery, stage 1: return the user's actual configured
-    // security question(s) so the frontend can display them. For
-    // anti-enumeration, non-existent usernames receive a plausible generic
-    // question — the response always contains at least one entry and uses
-    // the same shape regardless of whether the account is real.
-    const generic = [{ question: "What is your account recovery question?" }];
-    if (typeof username !== "string" || !username.trim()) {
-      return generic;
-    }
-    let normalizedUsername;
-    try {
-      normalizedUsername = User.normalizeUsername(username);
-    } catch (_err) {
-      return generic;
-    }
-    const user = await this.userRepository.findByUsername(normalizedUsername).catch(() => null);
-    if (!user || !Array.isArray(user.securityQuestions) || user.securityQuestions.length === 0) {
-      return generic;
-    }
-    // Return only the question text — never the answer hash.
-    return user.securityQuestions.map((entry) => ({ question: entry.question }));
+  async getSecurityQuestions(_username) {
+    // Anti-enumeration: always return the same generic challenge label
+    // regardless of whether the username exists or has configured questions.
+    // The caller supplies no information that distinguishes a real account
+    // from a non-existent one. The actual user-configured question text is
+    // never disclosed at this unauthenticated stage — it is only relevant
+    // internally during the /recover-password step, where the backend checks
+    // the provided answer against all of the account's configured questions.
+    return [{ question: "What is your account recovery question?" }];
   }
 
   async recoverPasswordWithQuestion({ username, question, answer, newPassword }) {
@@ -378,21 +365,21 @@ export class AuthService {
       return noOpResponse;
     }
 
-    const questionEntry = (user.securityQuestions || []).find(
-      (entry) =>
-        typeof question === "string" &&
-        entry.question.trim().toLowerCase() === question.trim().toLowerCase()
-    );
-
-    if (!questionEntry) {
-      await this.incrementRecoveryFailure(user);
-      return noOpResponse;
+    // Since the /security-questions endpoint no longer discloses which specific
+    // question the account uses, we cannot match by question text here.
+    // Instead, check whether the provided answer validates against any of the
+    // account's configured question entries. A successful match on any entry
+    // constitutes a valid proof-of-identity.
+    const normalizedAnswer = typeof answer === "string" ? answer.trim().toLowerCase() : "";
+    let answerValid = false;
+    for (const entry of (user.securityQuestions || [])) {
+      const match = await verifySecret(normalizedAnswer, entry.answerHash);
+      if (match) {
+        answerValid = true;
+        break;
+      }
     }
 
-    const answerValid = await verifySecret(
-      typeof answer === "string" ? answer.trim().toLowerCase() : "",
-      questionEntry.answerHash
-    );
     if (!answerValid) {
       await this.incrementRecoveryFailure(user);
       return noOpResponse;

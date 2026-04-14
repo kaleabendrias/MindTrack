@@ -324,7 +324,11 @@ test("successful recovery updates password hash and returns reset: true", async 
   assert.equal(auditLogs[0].reason, "security question recovery");
 });
 
-test("getSecurityQuestions returns user-specific questions for real users", async () => {
+test("getSecurityQuestions always returns the uniform generic label, even for real users with configured questions", async () => {
+  // Security fix: the endpoint must never disclose whether the username
+  // exists or which specific question that account uses. A real user with
+  // two configured questions must receive the same single generic challenge
+  // label as a non-existent user — indistinguishable to any caller.
   const authService = new AuthService({
     userRepository: {
       findByUsername: async () => ({
@@ -346,12 +350,11 @@ test("getSecurityQuestions returns user-specific questions for real users", asyn
   });
 
   const questions = await authService.getSecurityQuestions("squser");
-  assert.equal(questions.length, 2);
-  assert.equal(questions[0].question, "What is your pet's name?");
-  assert.equal(questions[1].question, "What city were you born in?");
+  // Must return exactly one generic entry — never the user's configured questions.
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].question, "What is your account recovery question?");
   // Must never expose the answer hash.
   assert.equal(questions[0].answerHash, undefined);
-  assert.equal(questions[1].answerHash, undefined);
 });
 
 test("getSecurityQuestions returns generic fallback for nonexistent users", async () => {
