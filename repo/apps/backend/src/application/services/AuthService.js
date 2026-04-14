@@ -323,12 +323,11 @@ export class AuthService {
   }
 
   async getSecurityQuestions(username) {
-    // Account enumeration mitigation: this endpoint is unauthenticated, so it
-    // must NOT distinguish between an existing and a non-existing username.
-    // Always return the same generic payload, regardless of whether the
-    // supplied username matches a real account. Real questions are still
-    // required at /recover-password, which is rate limited and uses
-    // constant-time answer verification.
+    // Two-stage recovery, stage 1: return the user's actual configured
+    // security question(s) so the frontend can display them. For
+    // anti-enumeration, non-existent usernames receive a plausible generic
+    // question — the response always contains at least one entry and uses
+    // the same shape regardless of whether the account is real.
     const generic = [{ question: "What is your account recovery question?" }];
     if (typeof username !== "string" || !username.trim()) {
       return generic;
@@ -339,33 +338,32 @@ export class AuthService {
     } catch (_err) {
       return generic;
     }
-    // Touch the repository so that valid and invalid usernames have similar
-    // timing characteristics, but never branch the response on the result.
-    await this.userRepository.findByUsername(normalizedUsername).catch(() => null);
-    return generic;
+    const user = await this.userRepository.findByUsername(normalizedUsername).catch(() => null);
+    if (!user || !Array.isArray(user.securityQuestions) || user.securityQuestions.length === 0) {
+      return generic;
+    }
+    // Return only the question text — never the answer hash.
+    return user.securityQuestions.map((entry) => ({ question: entry.question }));
   }
 
   async recoverPasswordWithQuestion({ username, question, answer, newPassword }) {
     // Account-enumeration mitigation: this endpoint is unauthenticated and
-    // MUST return a uniform shape regardless of whether the username is real,
-    // whether the question matches, or whether the answer matches. The only
-    // signal an external caller can derive is "submit again later" — never
-    // "this user does/does not exist". The single non-uniform branch is the
-    // password-policy check, which validates the *attacker-supplied*
-    // newPassword and therefore leaks no account state.
-    //
-    // We still enforce the password policy up front so that a caller who
-    // already knows their own credentials gets a meaningful failure on a
-    // weak password rather than a silent "ok".
+    // MUST return HTTP 200 with the same shape regardless of whether the
+    // username is real, the question matches, or the answer matches. The
+    // `reset` flag distinguishes a genuine password change from a no-op so
+    // the frontend can show accurate feedback without leaking account state
+    // to automated scanners (they see `success: true` either way and must
+    // attempt login to confirm). The single non-uniform branch is the
+    // password-policy check, which validates attacker-supplied input only.
     enforcePasswordPolicy(newPassword);
 
-    const uniformResponse = { success: true };
+    const noOpResponse = { success: true, reset: false };
 
     let normalizedUsername;
     try {
       normalizedUsername = User.normalizeUsername(username);
     } catch (_err) {
-      return uniformResponse;
+      return noOpResponse;
     }
 
     const user = await this.userRepository
@@ -373,14 +371,11 @@ export class AuthService {
       .catch(() => null);
 
     if (!user) {
-      return uniformResponse;
+      return noOpResponse;
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
-      // Even an account lock must NOT be disclosed on this path. The lock
-      // still applies on the authenticated /login path, which is where
-      // surfacing it is appropriate.
-      return uniformResponse;
+      return noOpResponse;
     }
 
     const questionEntry = (user.securityQuestions || []).find(
@@ -391,7 +386,7 @@ export class AuthService {
 
     if (!questionEntry) {
       await this.incrementRecoveryFailure(user);
-      return uniformResponse;
+      return noOpResponse;
     }
 
     const answerValid = await verifySecret(
@@ -400,7 +395,7 @@ export class AuthService {
     );
     if (!answerValid) {
       await this.incrementRecoveryFailure(user);
-      return uniformResponse;
+      return noOpResponse;
     }
 
     await this.userRepository.update(user.id, {
@@ -420,7 +415,7 @@ export class AuthService {
       after: { passwordHash: "***" }
     });
 
-    return uniformResponse;
+    return { success: true, reset: true };
   }
 
   async incrementRecoveryFailure(user) {

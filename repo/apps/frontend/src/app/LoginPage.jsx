@@ -94,13 +94,17 @@ export function LoginPage({ onLogin, error }) {
               return;
             }
             try {
-              await recoverPassword({
+              const result = await recoverPassword({
                 username: recoveryUsername,
                 question: selectedQuestion,
                 answer: recoveryAnswer,
                 newPassword
               });
-              setRecoveryMessage("Password reset successfully. You can now sign in.");
+              if (result.reset) {
+                setRecoveryMessage("Password reset successfully. You can now sign in.");
+              } else {
+                setRecoveryError("Recovery failed. Please verify your security answer and try again.");
+              }
               setRecoveryAnswer("");
               setNewPassword("");
             } catch (err) {

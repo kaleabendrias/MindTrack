@@ -120,25 +120,20 @@ export class MongoSystemRepository {
 
   async _applyRestore(snapshot, session) {
     const opts = { session };
-    if (snapshot.users?.length) {
-      await UserModel.deleteMany({}, opts);
-      await UserModel.insertMany(snapshot.users, opts);
-    }
-    if (snapshot.clients?.length) {
-      await MindTrackClientModel.deleteMany({}, opts);
-      await MindTrackClientModel.insertMany(snapshot.clients, opts);
-    }
-    if (snapshot.entries?.length) {
-      await MindTrackEntryModel.deleteMany({}, opts);
-      await MindTrackEntryModel.insertMany(snapshot.entries, opts);
-    }
-    if (snapshot.facilities?.length) {
-      await FacilityModel.deleteMany({}, opts);
-      await FacilityModel.insertMany(snapshot.facilities, opts);
-    }
-    if (snapshot.settings?.length) {
-      await SystemSettingsModel.deleteMany({}, opts);
-      await SystemSettingsModel.insertMany(snapshot.settings, opts);
+
+    const restorableCollections = [
+      { model: UserModel, data: snapshot.users },
+      { model: MindTrackClientModel, data: snapshot.clients },
+      { model: MindTrackEntryModel, data: snapshot.entries },
+      { model: FacilityModel, data: snapshot.facilities },
+      { model: SystemSettingsModel, data: snapshot.settings },
+    ];
+
+    for (const { model, data } of restorableCollections) {
+      await model.deleteMany({}, opts);
+      if (data?.length) {
+        await model.insertMany(data, opts);
+      }
     }
     // NOTE: snapshot.auditLogs is intentionally NOT restored. The
     // auditLogSchema is append-only — overwriting it would break the

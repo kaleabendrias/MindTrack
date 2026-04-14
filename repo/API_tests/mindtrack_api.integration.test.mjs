@@ -853,35 +853,40 @@ test("self-scoped /system/my-security-flags remains available to all authenticat
   assert.ok(Array.isArray(json.data));
 });
 
-test("unauthenticated /auth/security-questions returns generic payload regardless of username", async () => {
-  // Existing username
+test("unauthenticated /auth/security-questions returns user-specific question for real users and generic for others", async () => {
+  // Existing username — should return the user's configured security question(s)
   const realRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=administrator`);
   assert.equal(realRes.status, 200);
   const realJson = await realRes.json();
+  assert.ok(Array.isArray(realJson.data));
+  assert.ok(realJson.data.length >= 1, "real user should have at least one security question");
+  assert.ok(typeof realJson.data[0].question === "string");
+  // The question should be the user's actual configured question, not the generic fallback
+  assert.notEqual(realJson.data[0].question, "What is your account recovery question?",
+    "real user should receive their configured question, not the generic fallback");
 
-  // Non-existing username
+  // Non-existing username — should return generic fallback
   const fakeRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=zzz_no_such_user_zzz`);
   assert.equal(fakeRes.status, 200);
   const fakeJson = await fakeRes.json();
+  assert.ok(Array.isArray(fakeJson.data));
+  assert.equal(fakeJson.data.length, 1);
+  assert.equal(fakeJson.data[0].question, "What is your account recovery question?");
 
-  // Empty username
+  // Empty username — should return generic fallback
   const emptyRes = await fetch(`${BASE}/api/v1/auth/security-questions?username=`);
   assert.equal(emptyRes.status, 200);
   const emptyJson = await emptyRes.json();
+  assert.deepEqual(fakeJson.data, emptyJson.data,
+    "fake and empty usernames must both return the same generic fallback");
 
-  assert.deepEqual(
-    realJson.data,
-    fakeJson.data,
-    "response must NOT differ between real and fake usernames"
-  );
-  assert.deepEqual(
-    realJson.data,
-    emptyJson.data,
-    "response must NOT differ between real and empty usernames"
-  );
-  assert.ok(Array.isArray(realJson.data));
-  assert.equal(realJson.data.length, 1);
-  assert.ok(typeof realJson.data[0].question === "string");
+  // All responses must have the same shape: array of { question: string }
+  for (const dataset of [realJson.data, fakeJson.data, emptyJson.data]) {
+    for (const entry of dataset) {
+      assert.ok(typeof entry.question === "string", "each entry must have a question string");
+      assert.equal(Object.keys(entry).length, 1, "entries must only expose the question text, not answer hashes");
+    }
+  }
 });
 
 test("/auth/recover-password returns uniform success regardless of user/question/answer validity", async () => {
@@ -928,7 +933,8 @@ test("/auth/recover-password returns uniform success regardless of user/question
     });
     assert.equal(res.status, 200, `${tc.label}: expected 200, got ${res.status}`);
     const json = await res.json();
-    assert.deepEqual(json, { data: { success: true } }, `${tc.label}: shape mismatch`);
+    assert.equal(json.data.success, true, `${tc.label}: success must be true`);
+    assert.equal(json.data.reset, false, `${tc.label}: reset must be false for invalid recovery`);
     if (!firstShape) {
       firstShape = json;
     } else {
@@ -1460,4 +1466,82 @@ test("401/403/404 matrix across sensitive endpoint families", async () => {
       `${row.label}: expected ${row.expect}, got ${res.status}`
     );
   }
+});
+
+test("restore from empty-state backup clears stale data and results in zero collection counts", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Step 1: Snapshot the current seeded state so we can restore it afterward.
+  const seedBackupBody = JSON.stringify({ reason: "empty-restore test: preserve seed" });
+  const seedBackupRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-run", { method: "POST", body: seedBackupBody }),
+    body: seedBackupBody
+  });
+  const seedBackupJson = await seedBackupRes.json();
+  assert.equal(seedBackupRes.status, 200);
+  const seedBackupFile = seedBackupJson.data.file;
+
+  // Step 2: Record how many clients exist right now (seeded state).
+  const preClientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(admin, "/api/v1/mindtrack/clients")
+  });
+  const preClients = await preClientsRes.json();
+  assert.equal(preClientsRes.status, 200);
+  const seededClientCount = preClients.data.length;
+  assert.ok(seededClientCount >= 1, "seed data should include at least one client");
+
+  // Step 3: Create an extra client that will become stale data.
+  const staleBody = JSON.stringify({
+    name: "Stale Client For Empty Restore",
+    dob: "2000-01-01",
+    phone: "+1-555-000-9999",
+    address: "999 Stale Lane",
+    primaryClinicianId: "0000000000000000000000b1",
+    channel: "in_person",
+    tags: ["stale-test"],
+    reason: "create stale data for empty-restore test"
+  });
+  const staleRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/mindtrack/clients", { method: "POST", body: staleBody }),
+    body: staleBody
+  });
+  assert.equal(staleRes.status, 201, "stale client should be created");
+
+  // Confirm the extra client is present.
+  const midClientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(admin, "/api/v1/mindtrack/clients")
+  });
+  const midClients = await midClientsRes.json();
+  assert.equal(midClients.data.length, seededClientCount + 1, "extra client should be visible");
+
+  // Step 4: Restore from the seed backup (which does NOT contain the stale client).
+  const restoreBody = JSON.stringify({ filename: seedBackupFile, reason: "empty-restore test: wipe stale data" });
+  const restoreRes = await fetch(`${BASE}/api/v1/system/backup-restore`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/backup-restore", {
+      method: "POST",
+      body: restoreBody,
+      idempotencyKey: crypto.randomUUID()
+    }),
+    body: restoreBody
+  });
+  const restoreJson = await restoreRes.json();
+  assert.equal(restoreRes.status, 200);
+  assert.equal(restoreJson.data.success, true);
+
+  // Step 5: Re-login (sessions may have been wiped by restore) and verify
+  // the stale client is gone — the count must match the original seed exactly.
+  const postAdmin = await login("administrator", ADMIN_PASS);
+  const postClientsRes = await fetch(`${BASE}/api/v1/mindtrack/clients`, {
+    headers: trustedHeaders(postAdmin, "/api/v1/mindtrack/clients")
+  });
+  const postClients = await postClientsRes.json();
+  assert.equal(postClientsRes.status, 200);
+  assert.equal(
+    postClients.data.length,
+    seededClientCount,
+    "restore must clear stale data: client count should match the backup snapshot exactly, not preserve extra records"
+  );
 });

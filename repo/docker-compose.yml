@@ -40,15 +40,17 @@ services:
       APP_PORT: 4000
       MONGO_URI: mongodb://127.0.0.1:27017/offline_system?replicaSet=rs0
       MONGO_DB_NAME: offline_system
-      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
-      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET}
-      REQUEST_SIGNING_SECRET: ${REQUEST_SIGNING_SECRET}
-      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-}
+      REQUEST_SIGNING_SECRET: ${REQUEST_SIGNING_SECRET:-}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-RotateMe_Admin_2026x1}
       SEED_CLINICIAN_PASSWORD: ${SEED_CLINICIAN_PASSWORD:-RotateMe_Clinician_2026x1}
       SEED_CLIENT_PASSWORD: ${SEED_CLIENT_PASSWORD:-RotateMe_Client_2026x1}
       SEED_REQUIRE_ROTATION: ${SEED_REQUIRE_ROTATION:-true}
       BACKUP_DIRECTORY: /var/lib/offline-system/backups
+    volumes:
+      - backend-data:/var/lib/offline-system
     depends_on:
       mongodb:
         condition: service_healthy
@@ -67,10 +69,10 @@ services:
       APP_PORT: 4000
       MONGO_URI: mongodb://127.0.0.1:27017/offline_system?replicaSet=rs0
       MONGO_DB_NAME: offline_system
-      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
-      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET}
-      REQUEST_SIGNING_SECRET: ${REQUEST_SIGNING_SECRET}
-      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-}
+      REQUEST_SIGNING_SECRET: ${REQUEST_SIGNING_SECRET:-}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
     volumes:
       - backend-data:/var/lib/offline-system
