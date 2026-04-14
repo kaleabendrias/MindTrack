@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AuthService } from "../../apps/backend/src/application/services/AuthService.js";
 import { enforcePasswordPolicy } from "../../apps/backend/src/application/security/passwordPolicy.js";
+import { hashSecret, verifySecret } from "../../apps/backend/src/infrastructure/security/passwordHasher.js";
 import {
   createSessionRateLimiter,
   createRecoveryRateLimiter
@@ -180,7 +181,7 @@ test("failed recovery silently increments failure count without leaking outcome"
     answer: "any",
     newPassword: "NewPass12345678"
   });
-  assert.deepEqual(result, { success: true }, "must return uniform success");
+  assert.deepEqual(result, { success: true, reset: false }, "must return uniform success with reset: false");
 
   assert.equal(updates.length, 1);
   assert.equal(updates[0].failedLoginAttempts, 5);
@@ -218,7 +219,7 @@ test("locked account does not leak lock state on recovery", async () => {
     answer: "any",
     newPassword: "NewPass12345678"
   });
-  assert.deepEqual(result, { success: true }, "must return uniform success");
+  assert.deepEqual(result, { success: true, reset: false }, "must return uniform success with reset: false");
   assert.equal(updates.length, 0, "must not modify a locked account on this path");
 });
 
@@ -241,7 +242,7 @@ test("nonexistent user yields the same uniform response on recovery", async () =
     answer: "anything",
     newPassword: "NewPass12345678"
   });
-  assert.deepEqual(result, { success: true });
+  assert.deepEqual(result, { success: true, reset: false });
 });
 
 test("malformed/invalid username also yields the uniform response", async () => {
@@ -265,5 +266,106 @@ test("malformed/invalid username also yields the uniform response", async () => 
     answer: "anything",
     newPassword: "NewPass12345678"
   });
-  assert.deepEqual(result, { success: true });
+  assert.deepEqual(result, { success: true, reset: false });
+});
+
+test("successful recovery updates password hash and returns reset: true", async () => {
+  // Create a real answer hash so verifySecret will pass inside AuthService.
+  const answerHash = await hashSecret("myrecoveryanswer");
+  const originalPasswordHash = await hashSecret("OldPassword12345");
+
+  const updates = [];
+  const auditLogs = [];
+  const authService = new AuthService({
+    userRepository: {
+      findByUsername: async () => ({
+        id: "u-recover-ok",
+        username: "recoveruser",
+        role: "client",
+        permissions: [],
+        passwordHash: originalPasswordHash,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        securityQuestions: [{ question: "What is your pet's name?", answerHash }]
+      }),
+      update: async (_id, payload) => updates.push(payload),
+      findById: async () => null
+    },
+    sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
+    auditService: { logAction: async (entry) => auditLogs.push(entry) }
+  });
+
+  const result = await authService.recoverPasswordWithQuestion({
+    username: "recoveruser",
+    question: "What is your pet's name?",
+    answer: "myrecoveryanswer",
+    newPassword: "BrandNewSecurePass99"
+  });
+
+  // Must signal a genuine reset so the frontend can show the success toast.
+  assert.deepEqual(result, { success: true, reset: true });
+
+  // Password hash must have been updated in the repository.
+  assert.equal(updates.length, 1);
+  assert.ok(typeof updates[0].passwordHash === "string");
+  assert.notEqual(updates[0].passwordHash, originalPasswordHash,
+    "password hash must differ after recovery");
+  // Verify the new hash actually corresponds to the new password.
+  const newHashValid = await verifySecret("BrandNewSecurePass99", updates[0].passwordHash);
+  assert.equal(newHashValid, true, "new hash must verify against the new password");
+  assert.equal(updates[0].failedLoginAttempts, 0);
+  assert.equal(updates[0].lockedUntil, null);
+  assert.equal(updates[0].mustRotatePassword, false);
+
+  // Audit log must record the recovery action.
+  assert.equal(auditLogs.length, 1);
+  assert.equal(auditLogs[0].action, "update");
+  assert.equal(auditLogs[0].entityType, "user");
+  assert.equal(auditLogs[0].reason, "security question recovery");
+});
+
+test("getSecurityQuestions returns user-specific questions for real users", async () => {
+  const authService = new AuthService({
+    userRepository: {
+      findByUsername: async () => ({
+        id: "u-sq",
+        username: "squser",
+        role: "client",
+        permissions: [],
+        passwordHash: "x:y",
+        securityQuestions: [
+          { question: "What is your pet's name?", answerHash: "salt:hash" },
+          { question: "What city were you born in?", answerHash: "salt2:hash2" }
+        ]
+      }),
+      update: async () => {},
+      findById: async () => null
+    },
+    sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
+    auditService: { logAction: async () => {} }
+  });
+
+  const questions = await authService.getSecurityQuestions("squser");
+  assert.equal(questions.length, 2);
+  assert.equal(questions[0].question, "What is your pet's name?");
+  assert.equal(questions[1].question, "What city were you born in?");
+  // Must never expose the answer hash.
+  assert.equal(questions[0].answerHash, undefined);
+  assert.equal(questions[1].answerHash, undefined);
+});
+
+test("getSecurityQuestions returns generic fallback for nonexistent users", async () => {
+  const authService = new AuthService({
+    userRepository: {
+      findByUsername: async () => null,
+      update: async () => {},
+      findById: async () => null
+    },
+    sessionRepository: { create: async () => {}, findById: async () => null, update: async () => {} },
+    auditService: { logAction: async () => {} }
+  });
+
+  const questions = await authService.getSecurityQuestions("no_such_user");
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].question, "What is your account recovery question?");
 });

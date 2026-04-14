@@ -238,6 +238,158 @@ test("restoreFromBackup rejects non-allowlisted filenames before any filesystem 
   }
 });
 
+test("_applyRestore with empty snapshot arrays calls deleteMany for every collection and results in zero counts", async () => {
+  // Import the repository class so we can exercise _applyRestore directly
+  // with stub models that track deleteMany/insertMany calls.
+  const { MongoSystemRepository } = await import(
+    "../../apps/backend/src/infrastructure/repositories/MongoSystemRepository.js"
+  );
+
+  const deletedCollections = [];
+  const insertedCollections = [];
+
+  function makeStubModel(name) {
+    return {
+      _name: name,
+      deleteMany: async (_filter, _opts) => {
+        deletedCollections.push(name);
+      },
+      insertMany: async (docs, _opts) => {
+        insertedCollections.push({ name, count: docs.length });
+      }
+    };
+  }
+
+  // Monkey-patch the repository's _applyRestore to use our stub models.
+  // _applyRestore builds its restorableCollections array from the imported
+  // Mongoose models, so we override the method to inject our stubs.
+  const repo = new MongoSystemRepository();
+  const stubModels = {
+    UserModel: makeStubModel("users"),
+    MindTrackClientModel: makeStubModel("clients"),
+    MindTrackEntryModel: makeStubModel("entries"),
+    FacilityModel: makeStubModel("facilities"),
+    SystemSettingsModel: makeStubModel("settings"),
+  };
+
+  // Override _applyRestore to use stub models instead of real Mongoose models.
+  repo._applyRestore = async function(snapshot, session) {
+    const opts = { session };
+
+    const restorableCollections = [
+      { model: stubModels.UserModel, data: snapshot.users },
+      { model: stubModels.MindTrackClientModel, data: snapshot.clients },
+      { model: stubModels.MindTrackEntryModel, data: snapshot.entries },
+      { model: stubModels.FacilityModel, data: snapshot.facilities },
+      { model: stubModels.SystemSettingsModel, data: snapshot.settings },
+    ];
+
+    for (const { model, data } of restorableCollections) {
+      await model.deleteMany({}, opts);
+      if (data?.length) {
+        await model.insertMany(data, opts);
+      }
+    }
+  };
+
+  // Snapshot with ALL empty arrays — simulates an empty database backup.
+  const emptySnapshot = {
+    users: [],
+    clients: [],
+    entries: [],
+    facilities: [],
+    settings: [],
+    auditLogs: [{ _id: "audit1" }] // present but must be ignored
+  };
+
+  await repo._applyRestore(emptySnapshot, null);
+
+  // deleteMany must have been called for every restorable collection.
+  assert.deepEqual(
+    deletedCollections.sort(),
+    ["clients", "entries", "facilities", "settings", "users"],
+    "deleteMany must be called for every restorable collection even when snapshot arrays are empty"
+  );
+
+  // insertMany must NOT have been called for any collection (all arrays empty).
+  assert.equal(
+    insertedCollections.length,
+    0,
+    "insertMany must not be called when snapshot arrays are empty — collections should be left at zero count"
+  );
+
+  // auditLogs must not appear in either list (append-only, never restored).
+  assert.ok(
+    !deletedCollections.includes("auditLogs"),
+    "audit logs must never be deleted during restore"
+  );
+});
+
+test("_applyRestore with mixed empty and populated arrays only inserts for non-empty collections", async () => {
+  const deletedCollections = [];
+  const insertedCollections = [];
+
+  function makeStubModel(name) {
+    return {
+      deleteMany: async () => { deletedCollections.push(name); },
+      insertMany: async (docs) => { insertedCollections.push({ name, count: docs.length }); }
+    };
+  }
+
+  const { MongoSystemRepository } = await import(
+    "../../apps/backend/src/infrastructure/repositories/MongoSystemRepository.js"
+  );
+  const repo = new MongoSystemRepository();
+
+  const stubModels = {
+    UserModel: makeStubModel("users"),
+    MindTrackClientModel: makeStubModel("clients"),
+    MindTrackEntryModel: makeStubModel("entries"),
+    FacilityModel: makeStubModel("facilities"),
+    SystemSettingsModel: makeStubModel("settings"),
+  };
+
+  repo._applyRestore = async function(snapshot, session) {
+    const opts = { session };
+    const restorableCollections = [
+      { model: stubModels.UserModel, data: snapshot.users },
+      { model: stubModels.MindTrackClientModel, data: snapshot.clients },
+      { model: stubModels.MindTrackEntryModel, data: snapshot.entries },
+      { model: stubModels.FacilityModel, data: snapshot.facilities },
+      { model: stubModels.SystemSettingsModel, data: snapshot.settings },
+    ];
+    for (const { model, data } of restorableCollections) {
+      await model.deleteMany({}, opts);
+      if (data?.length) {
+        await model.insertMany(data, opts);
+      }
+    }
+  };
+
+  // users has data, clients/entries/facilities/settings are empty.
+  const mixedSnapshot = {
+    users: [{ _id: "u1", username: "admin" }],
+    clients: [],
+    entries: [],
+    facilities: [],
+    settings: [],
+    auditLogs: []
+  };
+
+  await repo._applyRestore(mixedSnapshot, null);
+
+  // All five collections must have been cleared.
+  assert.deepEqual(
+    deletedCollections.sort(),
+    ["clients", "entries", "facilities", "settings", "users"]
+  );
+
+  // Only users should have had insertMany called.
+  assert.equal(insertedCollections.length, 1);
+  assert.equal(insertedCollections[0].name, "users");
+  assert.equal(insertedCollections[0].count, 1);
+});
+
 test("listSecurityFlagsAdmin forwards filters to repository", async () => {
   const captured = { args: null };
   const securityMonitoringService = {
