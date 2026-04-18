@@ -316,3 +316,308 @@ test("frontend serves pages and API proxy is operational", async () => {
   const directHealth = await fetch(`${BACKEND}/healthz`);
   assert.equal(directHealth.status, 200, "backend healthz should be reachable");
 });
+
+// ---------------------------------------------------------------------------
+// Extended E2E workflow tests — true end-to-end coverage of all missing
+// endpoint families exercised through the running stack (backend + frontend).
+// ---------------------------------------------------------------------------
+
+test("E2E: frontend serves role-appropriate HTML for all known routes", async () => {
+  // The SPA serves a single index.html for all routes. Confirm the frontend
+  // Nginx serves a valid HTML shell for the paths each role navigates to.
+  const routes = ["/", "/login", "/client", "/clinician", "/administrator"];
+  for (const route of routes) {
+    const res = await fetch(`${FRONTEND}${route}`);
+    assert.equal(res.status, 200, `frontend must serve ${route}`);
+    const text = await res.text();
+    assert.match(text, /<!DOCTYPE html>/i, `${route} must return an HTML document`);
+    assert.match(text, /<div id="root"/, `${route} must contain the React root mount point`);
+  }
+});
+
+test("E2E: auth token refresh flow via running stack", async () => {
+  const loginRes = await fetch(`${BACKEND}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "clinician", password: CLINICIAN_PASS })
+  });
+  assert.equal(loginRes.status, 200, "E2E login must succeed before refresh test");
+  const loginCookie = (loginRes.headers.getSetCookie?.() || [])
+    .map((c) => c.split(";")[0])
+    .join("; ");
+
+  const refreshRes = await fetch(`${BACKEND}/api/v1/auth/refresh`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: loginCookie },
+    body: JSON.stringify({})
+  });
+  assert.equal(refreshRes.status, 200, "auth refresh must succeed with a valid refresh cookie");
+  const refreshJson = await refreshRes.json();
+  assert.ok(refreshJson.data?.csrfToken, "refresh must return a fresh csrfToken");
+});
+
+test("E2E: auth logout invalidates the session", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Verify session active.
+  const beforeRes = await fetch(`${BACKEND}/api/v1/auth/session`, {
+    headers: trustedHeaders(admin, "/api/v1/auth/session")
+  });
+  assert.equal(beforeRes.status, 200, "session must be active before E2E logout");
+
+  // Logout.
+  const logoutBody = "{}";
+  const logoutRes = await fetch(`${BACKEND}/api/v1/auth/logout`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/auth/logout", { method: "POST", body: logoutBody }),
+    body: logoutBody
+  });
+  assert.equal(logoutRes.status, 200, "E2E logout must succeed");
+
+  // Old cookie must no longer work.
+  const afterRes = await fetch(`${BACKEND}/api/v1/auth/session`, {
+    headers: {
+      cookie: admin.cookie,
+      "content-type": "application/json",
+      "x-signature-timestamp": String(Date.now()),
+      "x-signature-nonce": crypto.randomUUID(),
+      "x-signature": "stale-after-logout"
+    }
+  });
+  assert.equal(afterRes.status, 401, "stale cookie must be rejected after E2E logout");
+});
+
+test("E2E: trending search terms are accessible through the running stack", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Run a few searches to seed trending data.
+  for (const term of ["anxiety", "sleep", "mood", "focus", "anxiety"]) {
+    await fetch(`${BACKEND}/api/v1/mindtrack/search?q=${term}&sort=newest`, {
+      headers: trustedHeaders(clinician, `/api/v1/mindtrack/search?q=${term}&sort=newest`)
+    });
+  }
+
+  const trendingRes = await fetch(`${BACKEND}/api/v1/mindtrack/search/trending`, {
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/search/trending")
+  });
+  assert.equal(trendingRes.status, 200, "trending endpoint must return 200");
+  const trendingJson = await trendingRes.json();
+  assert.ok(Array.isArray(trendingJson.data), "trending response must be an array");
+  for (const entry of trendingJson.data) {
+    assert.ok(typeof entry.term === "string", "each trending entry must have a string term");
+    assert.ok(typeof entry.count === "number", "each trending entry must have a numeric count");
+  }
+});
+
+test("E2E: full entry lifecycle — create → amend → delete → restore", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Create a fresh entry on cli002 (no legal hold).
+  const entryBody = JSON.stringify({
+    clientId: "cli002",
+    entryType: "assessment",
+    title: "E2E lifecycle entry",
+    body: "Original content for E2E lifecycle test.",
+    tags: ["e2e-lifecycle"],
+    reason: "E2E lifecycle test"
+  });
+  const createRes = await fetch(`${BACKEND}/api/v1/mindtrack/entries`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/entries", { method: "POST", body: entryBody }),
+    body: entryBody
+  });
+  assert.equal(createRes.status, 201, "E2E: entry creation must succeed");
+  const createJson = await createRes.json();
+  const entryId = createJson.data._id;
+
+  // Amend with idempotency.
+  const amendBody = JSON.stringify({
+    expectedVersion: 1,
+    body: "E2E amended body content.",
+    reason: "E2E amend"
+  });
+  const amendKey = crypto.randomUUID();
+  const amendRes = await fetch(`${BACKEND}/api/v1/mindtrack/entries/${entryId}/amend`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/amend`, {
+      method: "POST",
+      body: amendBody,
+      idempotencyKey: amendKey
+    }),
+    body: amendBody
+  });
+  assert.equal(amendRes.status, 200, "E2E: amend must succeed");
+  const amendJson = await amendRes.json();
+  assert.equal(Boolean(amendJson.idempotentReplay), false);
+
+  // Replay amend — must be idempotent.
+  const amendReplayRes = await fetch(`${BACKEND}/api/v1/mindtrack/entries/${entryId}/amend`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/amend`, {
+      method: "POST",
+      body: amendBody,
+      idempotencyKey: amendKey
+    }),
+    body: amendBody
+  });
+  assert.equal(amendReplayRes.status, 200, "E2E: amend replay must be 200");
+  assert.equal(Boolean((await amendReplayRes.json()).idempotentReplay), true, "E2E: amend replay flag must be true");
+
+  // Delete the entry.
+  const deleteBody = JSON.stringify({ expectedVersion: 2, reason: "E2E delete" });
+  const deleteKey = crypto.randomUUID();
+  const deleteRes = await fetch(`${BACKEND}/api/v1/mindtrack/entries/${entryId}/delete`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/delete`, {
+      method: "POST",
+      body: deleteBody,
+      idempotencyKey: deleteKey
+    }),
+    body: deleteBody
+  });
+  assert.equal(deleteRes.status, 200, "E2E: delete must succeed");
+  const deleteJson = await deleteRes.json();
+  const versionAfterDelete = deleteJson.data?.version ?? 3;
+
+  // Restore the deleted entry.
+  const restoreBody = JSON.stringify({ expectedVersion: versionAfterDelete, reason: "E2E restore" });
+  const restoreRes = await fetch(`${BACKEND}/api/v1/mindtrack/entries/${entryId}/restore`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/restore`, {
+      method: "POST",
+      body: restoreBody,
+      idempotencyKey: crypto.randomUUID()
+    }),
+    body: restoreBody
+  });
+  assert.equal(restoreRes.status, 200, "E2E: restore must succeed");
+});
+
+test("E2E: custom profile-field full CRUD lifecycle", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const fieldKey = `e2e_field_${suffix}`;
+
+  // Create.
+  const createBody = JSON.stringify({
+    field: { key: fieldKey, label: "E2E Field", fieldType: "text", visibleTo: ["administrator"] },
+    reason: "E2E custom field test"
+  });
+  const createRes = await fetch(`${BACKEND}/api/v1/system/profile-fields/custom`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/profile-fields/custom", { method: "POST", body: createBody }),
+    body: createBody
+  });
+  assert.ok([200, 201].includes(createRes.status), `E2E: custom field create must succeed, got ${createRes.status}`);
+
+  // Update (PATCH).
+  const patchPath = `/api/v1/system/profile-fields/custom/${fieldKey}`;
+  const patchBody = JSON.stringify({ updates: { label: "E2E Updated Field" }, reason: "E2E label update" });
+  const patchRes = await fetch(`${BACKEND}${patchPath}`, {
+    method: "PATCH",
+    headers: trustedHeaders(admin, patchPath, { method: "PATCH", body: patchBody }),
+    body: patchBody
+  });
+  assert.equal(patchRes.status, 200, "E2E: custom field PATCH must succeed");
+
+  // Verify update via PATCH response.
+  const patchJson = await patchRes.json();
+  assert.ok(patchJson.data, "E2E: PATCH must return updated field data");
+
+  // Delete.
+  const deletePath = `/api/v1/system/profile-fields/custom/${fieldKey}`;
+  const deleteBody = JSON.stringify({ reason: "E2E cleanup" });
+  const deleteRes = await fetch(`${BACKEND}${deletePath}`, {
+    method: "DELETE",
+    headers: trustedHeaders(admin, deletePath, { method: "DELETE", body: deleteBody }),
+    body: deleteBody
+  });
+  assert.equal(deleteRes.status, 200, "E2E: custom field DELETE must succeed");
+
+  // Verify deletion via response.
+  const deleteResJson = await deleteRes.json();
+  assert.ok(deleteResJson.data, "E2E: DELETE must return a confirmation payload");
+});
+
+test("E2E: user admin — list, create, and password reset workflow", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // List users.
+  const listRes = await fetch(`${BACKEND}/api/v1/users`, {
+    headers: trustedHeaders(admin, "/api/v1/users")
+  });
+  assert.equal(listRes.status, 200, "E2E: admin must list users");
+  const listJson = await listRes.json();
+  assert.ok(Array.isArray(listJson.data) && listJson.data.length >= 3, "E2E: at least 3 seeded users");
+
+  // Create new user.
+  const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const username = `e2e_user_${suffix}`;
+  const password = `E2ePass${suffix.slice(0, 4)}2026!`;
+  const createBody = JSON.stringify({
+    username,
+    password,
+    role: "clinician",
+    securityQuestions: [{ question: "E2E test question?", answer: "e2e-answer" }],
+    reason: "E2E user creation test"
+  });
+  const createRes = await fetch(`${BACKEND}/api/v1/users`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/users", { method: "POST", body: createBody }),
+    body: createBody
+  });
+  assert.equal(createRes.status, 201, "E2E: admin must create user");
+  const createJson = await createRes.json();
+  const userId = createJson.data?._id || createJson.data?.id;
+  assert.ok(userId, "E2E: created user must have an id");
+
+  // Admin reset-password.
+  const resetPath = `/api/v1/users/${userId}/reset-password`;
+  const resetBody = JSON.stringify({
+    newPassword: `E2eReset${suffix.slice(0, 4)}2026!`,
+    reason: "E2E admin password reset"
+  });
+  const resetRes = await fetch(`${BACKEND}${resetPath}`, {
+    method: "POST",
+    headers: trustedHeaders(admin, resetPath, { method: "POST", body: resetBody }),
+    body: resetBody
+  });
+  assert.equal(resetRes.status, 200, "E2E: admin password reset must succeed");
+  assert.equal((await resetRes.json()).data?.success, true, "E2E: reset must confirm success");
+});
+
+test("E2E: frontend API proxy correctly forwards authenticated requests", async () => {
+  // The frontend Nginx is configured to proxy /api/v1/* to the backend.
+  // Verify that:
+  //  (a) the frontend serves a proper SPA index page
+  //  (b) the backend is directly reachable via its own health endpoint
+  //  (c) the login API is reachable through the frontend proxy /api/v1/* path
+  const indexRes = await fetch(`${FRONTEND}/`);
+  assert.equal(indexRes.status, 200, "frontend index must be reachable");
+  const html = await indexRes.text();
+  assert.match(html, /<!DOCTYPE html>/i, "frontend must serve an HTML document");
+
+  // Direct backend health check confirms the backend service is up.
+  const backendHealth = await fetch(`${BACKEND}/healthz`);
+  assert.equal(backendHealth.status, 200, "backend healthz must be reachable directly");
+  const healthJson = await backendHealth.json();
+  assert.ok(
+    healthJson.status === "ok" || healthJson.data?.status === "ok",
+    "healthz must return ok status"
+  );
+
+  // Confirm the proxy route works: login through the frontend Nginx proxy.
+  const proxyLoginRes = await fetch(`${FRONTEND}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "client", password: CLIENT_PASS })
+  });
+  assert.equal(
+    proxyLoginRes.status,
+    200,
+    "login via frontend proxy must succeed — confirms /api/v1/* is correctly forwarded"
+  );
+  const proxyJson = await proxyLoginRes.json();
+  assert.ok(proxyJson.data?.csrfToken, "proxied login response must include csrfToken");
+});

@@ -1,3 +1,5 @@
+<!-- project-type: fullstack -->
+
 # MindTrack Offline On-Prem Repository
 
 Fully offline outpatient mental-health package with a React frontend, Node/Express backend, and MongoDB, designed to run on-prem with Docker Compose as the only runtime entrypoint.
@@ -6,25 +8,7 @@ Fully offline outpatient mental-health package with a React frontend, Node/Expre
 
 ```bash
 ./generate-secrets.sh   # first time only — creates .env with random secrets
-docker compose up --build
-```
-
-## Local frontend verification commands
-
-These commands are for developer-only UI verification outside the production runtime path. Docker Compose remains the only supported production runtime entrypoint.
-
-```bash
-cd apps/frontend
-npm install
-npm run dev
-```
-
-Build and preview locally:
-
-```bash
-cd apps/frontend
-npm run build
-npm run preview
+docker-compose up --build
 ```
 
 ## Exposed ports
@@ -56,13 +40,13 @@ npm run preview
 
 ## First-time setup
 
-Before the first `docker compose up --build`, generate per-install secrets:
+Before the first `docker-compose up --build`, generate per-install secrets:
 
 ```bash
 ./generate-secrets.sh
 ```
 
-This creates a `.env` file (git-ignored) with cryptographically random secrets and initial seed passwords. No external services are required — only `openssl` and `/dev/urandom`.
+This creates a `.env` file (git-ignored) with cryptographically random secrets and initial seed passwords. Secret generation runs entirely inside a Docker container — no host-side `openssl` or other crypto tools are required.
 
 All seeded user passwords are marked for mandatory rotation on first login.
 
@@ -72,7 +56,13 @@ All seeded user passwords are marked for mandatory rotation on first login.
 
 Seeded usernames: `administrator`, `clinician`, `client`
 
-Passwords are set from the `.env` file generated above. Operators must rotate all passwords after first login.
+Default seeded passwords (set by `generate-secrets.sh`; operators must rotate all passwords after first login):
+
+| Role | Username | Default password |
+|------|----------|-----------------|
+| Administrator | `administrator` | `RotateMe_Admin_2026x1` |
+| Clinician | `clinician` | `RotateMe_Clinician_2026x1` |
+| Client | `client` | `RotateMe_Client_2026x1` |
 
 Default seeded clinician identifier for administrator client assignment:
 
@@ -285,7 +275,7 @@ Docker Compose stack. It is the single entry point that:
 3. Brings the stack up via `docker compose up -d --build` so backend,
    frontend, MongoDB, the seed job, and the test runners are all built
    from the current source tree.
-4. Executes the four test families in order, failing fast on the first
+4. Executes the five test families in order, failing fast on the first
    non-zero exit.
 
 ### Scope
@@ -294,14 +284,15 @@ Docker Compose stack. It is the single entry point that:
 
 | # | Family               | Location              | What it covers |
 |---|----------------------|-----------------------|----------------|
-| 1 | Backend unit tests   | `unit_tests/backend`  | Pure-domain logic: password policy, account lockout, rate-limit math, request-signing nonce ledger, restore rollback, idempotency concurrency, regex-escape safety. |
+| 1 | Backend unit tests   | `unit_tests/backend`  | Pure-domain logic: password policy, account lockout, rate-limit math, request-signing nonce ledger, restore rollback, idempotency concurrency, regex-escape safety, middleware error contracts, middleware ordering. |
 | 2 | Frontend unit tests  | `unit_tests/frontend` | React/JS unit tests for session isolation, recent-search storage scoping, and shared UI helpers. |
-| 3 | API integration tests| `API_tests`           | Live HTTP integration against the running backend: auth flows, request signing, replay/CSRF, role boundaries, validator boundaries, restore boundaries, signed attachment download, search regex injection, 401/403/404 matrix. |
-| 4 | E2E tests            | `e2e/tests`           | Lightweight UI smoke tests against the running frontend container, including the assertion that removed routes (e.g. `/api/v1/work-orders`) return 404. |
+| 3 | Frontend DOM tests   | `apps/frontend/src/__tests__` | Vitest + React Testing Library DOM assertions on `LoginPage` and `ProtectedPage`: form rendering, inline errors, recovery flow, disabled third-party buttons, auth-gated redirect logic. |
+| 4 | API integration tests| `API_tests`           | Live HTTP integration against the running backend: auth flows, request signing, replay/CSRF, role boundaries, validator boundaries, restore boundaries, signed attachment download, search regex injection, 401/403/404 matrix. |
+| 5 | E2E tests            | `e2e/tests`           | Lightweight UI smoke tests against the running frontend container, including the assertion that removed routes (e.g. `/api/v1/work-orders`) return 404. |
 
 Each family runs inside a dedicated container (`test-runner` for unit +
-API, `e2e-runner` for E2E) so the host filesystem and host node version
-are never relied on.
+DOM + API, `e2e-runner` for E2E) so the host filesystem and host node
+toolchain are never relied on.
 
 ### Execution boundaries
 
@@ -332,8 +323,9 @@ From the repository root:
 ```
 
 That is the canonical path. There are no flags, no per-test toggles,
-and no environment prerequisites beyond Docker Compose and `openssl`
-(used to generate the ephemeral secrets).
+and no environment prerequisites beyond Docker Compose. Secret
+generation runs entirely inside a throwaway Docker container — no
+host-side Node.js, `openssl`, or other crypto tools are required.
 
 If you need to debug a single failing test interactively, you may use
 `docker compose exec test-runner sh -lc "node --test <path>"` against

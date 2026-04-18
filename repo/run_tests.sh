@@ -4,21 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------------------
-# Dynamically generate per-run cryptographic secrets using the OS CSPRNG.
-# These variables are exported into the current shell environment only —
-# they are never written to a .env file or any other persistent location.
+# Generate per-run cryptographic secrets entirely inside a throwaway Docker
+# container — Docker is the ONLY host prerequisite for this script.
+# No host-side Node.js, openssl, or other crypto tools are required.
+# Variables are exported into the current shell environment only; they are
+# never written to a .env file or any other persistent location.
 # Docker Compose reads them from the shell environment via the ${VAR:-}
 # substitutions in docker-compose.yml; a static .env file is not required
 # and, if present, is explicitly bypassed by the --env-file /dev/null flag
 # passed to every docker compose invocation below.
 # ---------------------------------------------------------------------------
-export AUTH_TOKEN_SECRET="$(openssl rand -hex 32)"
-export REFRESH_TOKEN_SECRET="$(openssl rand -hex 32)"
-export REQUEST_SIGNING_SECRET="$(openssl rand -hex 32)"
-export DATA_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SEED_ADMIN_PASSWORD="TestAdmin$(openssl rand -hex 4)Rotate1"
-export SEED_CLINICIAN_PASSWORD="TestClin$(openssl rand -hex 4)Rotate1"
-export SEED_CLIENT_PASSWORD="TestClient$(openssl rand -hex 4)Rotate1"
+_SECRET_OUTPUT="$(docker run --rm -i node:20-alpine node -e \
+  'const c=require("crypto"),h=n=>c.randomBytes(n).toString("hex");process.stdout.write(["AUTH_TOKEN_SECRET="+h(32),"REFRESH_TOKEN_SECRET="+h(32),"REQUEST_SIGNING_SECRET="+h(32),"DATA_ENCRYPTION_KEY="+h(32),"SEED_ADMIN_PASSWORD=TestAdmin"+h(4)+"Rotate1","SEED_CLINICIAN_PASSWORD=TestClin"+h(4)+"Rotate1","SEED_CLIENT_PASSWORD=TestClient"+h(4)+"Rotate1"].join("\n"));'
+)"
+while IFS='=' read -r _k _v || [[ -n "$_k" ]]; do
+  [[ -n "$_k" ]] && export "$_k=$_v"
+done <<< "$_SECRET_OUTPUT"
+unset _SECRET_OUTPUT _k _v
+
 export COOKIE_SECURE="false"
 # Allow seeded users to log in directly during the test stack run. Production
 # stacks must NEVER set this. The mustRotatePassword enforcement code path is
@@ -39,6 +42,9 @@ dc exec -T test-runner sh -lc "cd /workspace/apps/backend && npm ci --omit=dev >
 
 echo "[tests] Running frontend unit tests..."
 dc exec -T test-runner sh -lc "cd /workspace && node --test unit_tests/frontend"
+
+echo "[tests] Running frontend component DOM tests (Vitest + React Testing Library)..."
+dc exec -T test-runner sh -lc "cd /workspace/apps/frontend && npm ci --silent && npx vitest run"
 
 echo "[tests] Running API integration tests..."
 dc exec -T test-runner sh -lc "cd /workspace && BACKEND_BASE_URL=http://127.0.0.1:4000 SEED_ADMIN_PASSWORD='${SEED_ADMIN_PASSWORD}' SEED_CLINICIAN_PASSWORD='${SEED_CLINICIAN_PASSWORD}' SEED_CLIENT_PASSWORD='${SEED_CLIENT_PASSWORD}' node --test API_tests"

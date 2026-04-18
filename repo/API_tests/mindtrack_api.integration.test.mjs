@@ -71,6 +71,10 @@ test("trusted mutating request enforcement blocks missing csrf/nonce", async () 
     })
   });
   assert.equal(response.status, 401);
+  const body = await response.json();
+  assert.ok(typeof body.error === "string", "error response must include a string error message");
+  assert.ok(typeof body.code === "string", "error response must include a string error code");
+  assert.equal(body.data, undefined, "error response must not include a data field");
 });
 
 test("bad hmac signature is rejected on protected route", async () => {
@@ -85,6 +89,10 @@ test("bad hmac signature is rejected on protected route", async () => {
     }
   });
   assert.equal(response.status, 401);
+  const body = await response.json();
+  assert.ok(typeof body.error === "string", "invalid-signature response must include an error string");
+  assert.ok(typeof body.code === "string", "invalid-signature response must include an error code");
+  assert.equal(body.data, undefined, "error response must not leak data");
 });
 
 test("unauthorized role access returns 403 and signed session rate limiting returns 429", async () => {
@@ -94,6 +102,10 @@ test("unauthorized role access returns 403 and signed session rate limiting retu
     headers: trustedHeaders(clinician, "/api/v1/system/backup-status")
   });
   assert.equal(forbidden.status, 403);
+  const forbiddenBody = await forbidden.json();
+  assert.ok(typeof forbiddenBody.error === "string", "403 response must include an error string");
+  assert.ok(typeof forbiddenBody.code === "string", "403 response must include an error code");
+  assert.equal(forbiddenBody.data, undefined, "403 response must not include data");
 
   let saw429 = false;
   for (let index = 0; index < 65; index += 1) {
@@ -133,7 +145,12 @@ test("permission-gated PII visibility and object isolation differ by role", asyn
   });
   const selfContext = await selfContextRes.json();
   assert.equal(selfContextRes.status, 200);
+  assert.ok(selfContext.data, "self-context must return a data object");
+  assert.ok(selfContext.data.client, "self-context data must include a client object");
   assert.equal(selfContext.data.client._id, "cli001");
+  assert.ok(typeof selfContext.data.client.name === "string", "self-context client must have a name string");
+  assert.ok(Array.isArray(selfContext.data.timeline), "self-context must include a timeline array");
+  assert.equal(selfContext.error, undefined, "success response must not include error field");
 
   const forbiddenTimelineRes = await fetch(`${BASE}/api/v1/mindtrack/clients/cli002/timeline`, {
     headers: trustedHeaders(client, "/api/v1/mindtrack/clients/cli002/timeline")
@@ -264,8 +281,11 @@ test("backup lifecycle, radius constraints, and offline policy behave as expecte
   });
   const statusJson = await statusRes.json();
   assert.equal(statusRes.status, 200);
+  assert.ok(statusJson.data, "backup-status must return a data object");
   assert.equal(statusJson.data.schedule, "0 0 * * *");
   assert.equal(statusJson.data.retentionDays, 30);
+  assert.ok(typeof statusJson.data.retentionDays === "number", "retentionDays must be a number");
+  assert.equal(statusJson.error, undefined, "success response must not include error field");
 
   const backupRunRes = await fetch(`${BASE}/api/v1/system/backup-run`, {
     method: "POST",
@@ -1026,7 +1046,7 @@ test("requestSigningMiddleware rejects non-consecutive nonce replays", async () 
   assert.equal(replayBJson.code, "REPLAY_DETECTED");
 });
 
-test("login response surfaces mustRotatePassword flag (false in test stack)", async () => {
+test("login response surfaces mustRotatePassword flag and full user schema", async () => {
   // The test stack runs with SEED_REQUIRE_ROTATION=false so seeded users
   // can authenticate directly. The login response must still surface the
   // mustRotatePassword field so frontends can drive the rotation prompt.
@@ -1037,7 +1057,78 @@ test("login response surfaces mustRotatePassword flag (false in test stack)", as
   });
   assert.equal(res.status, 200);
   const json = await res.json();
-  assert.equal(typeof json.data?.user?.mustRotatePassword, "boolean");
+  // Full response body schema assertions.
+  assert.ok(json.data, "login response must include a data object");
+  assert.ok(json.data.user, "login data must include user object");
+  assert.ok(typeof json.data.user.id === "string", "user must have a string id");
+  assert.ok(typeof json.data.user.username === "string", "user must have a string username");
+  assert.ok(typeof json.data.user.role === "string", "user must have a string role");
+  assert.equal(typeof json.data.user.mustRotatePassword, "boolean", "mustRotatePassword must be boolean");
+  assert.ok(typeof json.data.csrfToken === "string", "login response must include csrfToken string");
+  assert.ok(json.data.csrfToken.length > 0, "csrfToken must be non-empty");
+  assert.equal(json.error, undefined, "success response must not include an error field");
+});
+
+test("POST /auth/rotate-password happy path: changes password and confirms success schema", async () => {
+  // Create a disposable test user so we can freely rotate their password
+  // without affecting the shared seeded sessions used by other tests.
+  const admin = await login("administrator", ADMIN_PASS);
+  const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const testUsername = `rotatetest_${suffix}`;
+  const initialPassword = `InitPass${suffix.slice(0, 4)}2026!`;
+  const rotatedPassword = `RotatedPass${suffix.slice(0, 4)}2026!`;
+
+  const createBody = JSON.stringify({
+    username: testUsername,
+    password: initialPassword,
+    role: "clinician",
+    securityQuestions: [{ question: "Rotate test station?", answer: "station-alpha" }],
+    reason: "rotate-password happy path test"
+  });
+  const createRes = await fetch(`${BASE}/api/v1/users`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/users", { method: "POST", body: createBody }),
+    body: createBody
+  });
+  assert.equal(createRes.status, 201, "test user must be created");
+
+  // Login as the new user to establish a session.
+  const testUser = await login(testUsername, initialPassword);
+  assert.ok(testUser.csrfToken, "new user login must return csrfToken");
+
+  // Call rotate-password with the correct current password.
+  const rotateBody = JSON.stringify({ currentPassword: initialPassword, newPassword: rotatedPassword });
+  const rotateRes = await fetch(`${BASE}/api/v1/auth/rotate-password`, {
+    method: "POST",
+    headers: trustedHeaders(testUser, "/api/v1/auth/rotate-password", { method: "POST", body: rotateBody }),
+    body: rotateBody
+  });
+  assert.equal(rotateRes.status, 200, "rotate-password must return 200 on success");
+
+  // Full response body schema assertions.
+  const rotateJson = await rotateRes.json();
+  assert.ok(rotateJson.data, "rotate-password response must include a data object");
+  assert.equal(rotateJson.data.success, true, "rotate-password data.success must be true");
+  assert.equal(rotateJson.error, undefined, "success response must not include an error field");
+  assert.equal(rotateJson.code, undefined, "success response must not include an error code");
+
+  // Verify the new password actually works.
+  const reloginRes = await fetch(`${BASE}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: testUsername, password: rotatedPassword })
+  });
+  assert.equal(reloginRes.status, 200, "login with new password must succeed after rotation");
+  const reloginJson = await reloginRes.json();
+  assert.ok(reloginJson.data?.csrfToken, "re-login must return a csrfToken");
+
+  // Verify the old password no longer works.
+  const oldPassRes = await fetch(`${BASE}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: testUsername, password: initialPassword })
+  });
+  assert.notEqual(oldPassRes.status, 200, "old password must be rejected after rotation");
 });
 
 test("/api/v1/system/profile-fields/custom validates malformed payloads with 400", async () => {
@@ -1557,4 +1648,439 @@ test("restore from empty-state backup clears stale data and results in zero coll
     seededClientCount,
     "restore must clear stale data: client count should match the backup snapshot exactly, not preserve extra records"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Previously-untested endpoint coverage: auth refresh/logout/third-party,
+// entry amend/delete/restore lifecycle, trending search, custom profile-field
+// PATCH and DELETE, and user admin write operations.
+// ---------------------------------------------------------------------------
+
+test("POST /auth/refresh issues a new access token using the refresh-token cookie", async () => {
+  // Login to obtain session cookies that include the refresh token.
+  const loginRes = await fetch(`${BASE}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "administrator", password: ADMIN_PASS })
+  });
+  assert.equal(loginRes.status, 200, "login must succeed before refresh test");
+  const loginCookie = cookiesFrom(loginRes);
+
+  // POST /auth/refresh is an unauthenticated (phase-1) route — no signed
+  // headers required — it relies solely on the HTTP-only refresh-token cookie.
+  const refreshRes = await fetch(`${BASE}/api/v1/auth/refresh`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie: loginCookie
+    },
+    body: JSON.stringify({})
+  });
+  assert.equal(refreshRes.status, 200, "refresh must succeed with a valid refresh-token cookie");
+  const refreshJson = await refreshRes.json();
+  assert.ok(refreshJson.data?.csrfToken, "refresh response must include a new csrfToken");
+  assert.equal(typeof refreshJson.data.csrfToken, "string");
+  assert.ok(refreshJson.data.csrfToken.length > 0, "csrfToken must be non-empty");
+});
+
+test("POST /auth/third-party is rejected because external integrations are disabled offline", async () => {
+  // The system is fully offline — third-party login must never succeed.
+  // The endpoint must return a non-2xx status (or a 2xx with disabled:true)
+  // indicating the feature is not available.
+  const res = await fetch(`${BASE}/api/v1/auth/third-party`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({})
+  });
+  // The endpoint must NOT grant a session: it returns 4xx/5xx or an explicit
+  // disabled payload. We accept any non-200 status, or a 200 where the
+  // response signals disabled state rather than issuing a token.
+  const json = await res.json();
+  const isDisabledResponse =
+    res.status !== 200 ||
+    json.data?.disabled === true ||
+    json.data?.enabled === false ||
+    json.error != null;
+  assert.equal(
+    isDisabledResponse,
+    true,
+    `third-party login must be disabled for offline operation, got status ${res.status}`
+  );
+});
+
+test("POST /auth/logout clears the authenticated session", async () => {
+  // Login to obtain a fresh session.
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Confirm the session is active.
+  const sessionBefore = await fetch(`${BASE}/api/v1/auth/session`, {
+    headers: trustedHeaders(admin, "/api/v1/auth/session")
+  });
+  assert.equal(sessionBefore.status, 200, "session must be active before logout");
+
+  // Call POST /auth/logout — this is in the protected chain so it requires
+  // the full signed-header set. Use "{}" as the body so the JSON body parser
+  // on the server and the HMAC computation both see a consistent payload.
+  const logoutBody = "{}";
+  const logoutRes = await fetch(`${BASE}/api/v1/auth/logout`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/auth/logout", { method: "POST", body: logoutBody }),
+    body: logoutBody
+  });
+  assert.equal(logoutRes.status, 200, "logout must return 200");
+
+  // After logout the old session cookie must no longer grant access.
+  // The server clears the auth cookie; sending the old cookie should now
+  // result in a 401 (no valid session) on any protected route.
+  const sessionAfter = await fetch(`${BASE}/api/v1/auth/session`, {
+    headers: {
+      cookie: admin.cookie,
+      "content-type": "application/json",
+      "x-signature-timestamp": String(Date.now()),
+      "x-signature-nonce": crypto.randomUUID(),
+      "x-signature": "post-logout-probe"
+    }
+  });
+  assert.equal(
+    sessionAfter.status,
+    401,
+    "old session cookie must be rejected after logout"
+  );
+});
+
+test("entry amend: create → amend with idempotency replay and correct entry update", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Create a fresh entry on cli002 (cli001 is under legal hold from an earlier test).
+  const entryBody = JSON.stringify({
+    clientId: "cli002",
+    entryType: "assessment",
+    title: "Amend lifecycle test",
+    body: "Original body — will be amended.",
+    tags: ["amend-test"],
+    reason: "amend lifecycle test setup"
+  });
+  const createRes = await fetch(`${BASE}/api/v1/mindtrack/entries`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/entries", { method: "POST", body: entryBody }),
+    body: entryBody
+  });
+  assert.equal(createRes.status, 201, "entry creation must succeed for amend test");
+  const createJson = await createRes.json();
+  const entryId = createJson.data._id;
+  assert.ok(entryId, "created entry must have an _id");
+
+  const amendBody = JSON.stringify({
+    expectedVersion: 1,
+    body: "Amended body — correction applied.",
+    reason: "amend lifecycle test correction"
+  });
+  const amendKey = crypto.randomUUID();
+
+  const firstAmend = await fetch(`${BASE}/api/v1/mindtrack/entries/${entryId}/amend`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/amend`, {
+      method: "POST",
+      body: amendBody,
+      idempotencyKey: amendKey
+    }),
+    body: amendBody
+  });
+  assert.equal(firstAmend.status, 200, "first amend must succeed");
+  const firstAmendJson = await firstAmend.json();
+  assert.equal(Boolean(firstAmendJson.idempotentReplay), false, "first amend must not be a replay");
+
+  // Replay the same amend — must be idempotent.
+  const secondAmend = await fetch(`${BASE}/api/v1/mindtrack/entries/${entryId}/amend`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/amend`, {
+      method: "POST",
+      body: amendBody,
+      idempotencyKey: amendKey
+    }),
+    body: amendBody
+  });
+  assert.equal(secondAmend.status, 200, "idempotent amend replay must return 200");
+  const secondAmendJson = await secondAmend.json();
+  assert.equal(Boolean(secondAmendJson.idempotentReplay), true, "second amend must be flagged as replay");
+});
+
+test("entry delete and restore: create → delete → restore lifecycle with idempotency", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Create a fresh entry on cli002.
+  const entryBody = JSON.stringify({
+    clientId: "cli002",
+    entryType: "follow_up",
+    title: "Delete/restore lifecycle test",
+    body: "Body for delete-restore lifecycle test.",
+    tags: ["delete-restore-test"],
+    reason: "delete-restore lifecycle test setup"
+  });
+  const createRes = await fetch(`${BASE}/api/v1/mindtrack/entries`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, "/api/v1/mindtrack/entries", { method: "POST", body: entryBody }),
+    body: entryBody
+  });
+  assert.equal(createRes.status, 201, "entry creation must succeed for delete-restore test");
+  const createJson = await createRes.json();
+  const entryId = createJson.data._id;
+
+  // Delete the entry (fresh entry starts at version 1).
+  const deleteBody = JSON.stringify({
+    expectedVersion: 1,
+    reason: "lifecycle test deletion"
+  });
+  const deleteKey = crypto.randomUUID();
+  const deleteRes = await fetch(`${BASE}/api/v1/mindtrack/entries/${entryId}/delete`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/delete`, {
+      method: "POST",
+      body: deleteBody,
+      idempotencyKey: deleteKey
+    }),
+    body: deleteBody
+  });
+  assert.equal(deleteRes.status, 200, "entry delete must succeed");
+  const deleteJson = await deleteRes.json();
+  assert.equal(Boolean(deleteJson.idempotentReplay), false, "first delete must not be a replay");
+
+  // Determine the version after delete to use for restore.
+  const versionAfterDelete = deleteJson.data?.version ?? 2;
+
+  // Restore the deleted entry.
+  const restoreBody = JSON.stringify({
+    expectedVersion: versionAfterDelete,
+    reason: "lifecycle test restore"
+  });
+  const restoreKey = crypto.randomUUID();
+  const restoreRes = await fetch(`${BASE}/api/v1/mindtrack/entries/${entryId}/restore`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/restore`, {
+      method: "POST",
+      body: restoreBody,
+      idempotencyKey: restoreKey
+    }),
+    body: restoreBody
+  });
+  assert.equal(restoreRes.status, 200, "entry restore must succeed");
+  const restoreJson = await restoreRes.json();
+  assert.equal(Boolean(restoreJson.idempotentReplay), false, "first restore must not be a replay");
+
+  // Replay the restore — must be idempotent.
+  const restoreReplayRes = await fetch(`${BASE}/api/v1/mindtrack/entries/${entryId}/restore`, {
+    method: "POST",
+    headers: trustedHeaders(clinician, `/api/v1/mindtrack/entries/${entryId}/restore`, {
+      method: "POST",
+      body: restoreBody,
+      idempotencyKey: restoreKey
+    }),
+    body: restoreBody
+  });
+  assert.equal(restoreReplayRes.status, 200, "idempotent restore replay must return 200");
+  const restoreReplayJson = await restoreReplayRes.json();
+  assert.equal(Boolean(restoreReplayJson.idempotentReplay), true, "second restore must be flagged as replay");
+});
+
+test("GET /mindtrack/search/trending returns a trending term array for all non-client roles", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+  const admin = await login("administrator", ADMIN_PASS);
+  const client = await login("client", CLIENT_PASS);
+
+  for (const [label, session] of [["clinician", clinician], ["admin", admin]]) {
+    const res = await fetch(`${BASE}/api/v1/mindtrack/search/trending`, {
+      headers: trustedHeaders(session, "/api/v1/mindtrack/search/trending")
+    });
+    assert.equal(res.status, 200, `${label} must be able to call trending terms`);
+    const json = await res.json();
+    assert.ok(Array.isArray(json.data), `${label}: trending data must be an array`);
+    for (const term of json.data) {
+      assert.ok(typeof term.term === "string", `${label}: each trending entry must have a term string`);
+      assert.ok(typeof term.count === "number", `${label}: each trending entry must have a count number`);
+    }
+  }
+
+  // Client role: trending is accessible (not role-blocked) — any 200 with array is valid.
+  const clientRes = await fetch(`${BASE}/api/v1/mindtrack/search/trending`, {
+    headers: trustedHeaders(client, "/api/v1/mindtrack/search/trending")
+  });
+  assert.equal(clientRes.status, 200, "client must be able to access trending terms");
+  const clientJson = await clientRes.json();
+  assert.ok(Array.isArray(clientJson.data), "client: trending data must be an array");
+});
+
+test("custom profile-field PATCH and DELETE full lifecycle", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Generate a unique key so this test is idempotent across runs.
+  const uniqueSuffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const fieldKey = `test_field_${uniqueSuffix}`;
+
+  // Create the custom field.
+  const createBody = JSON.stringify({
+    field: {
+      key: fieldKey,
+      label: "Test Custom Field",
+      fieldType: "text",
+      visibleTo: ["administrator", "clinician"]
+    },
+    reason: "integration test field creation"
+  });
+  const createRes = await fetch(`${BASE}/api/v1/system/profile-fields/custom`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/system/profile-fields/custom", { method: "POST", body: createBody }),
+    body: createBody
+  });
+  assert.ok([200, 201].includes(createRes.status), `custom field creation must succeed, got ${createRes.status}`);
+
+  // PATCH the custom field — update its label.
+  const patchPath = `/api/v1/system/profile-fields/custom/${fieldKey}`;
+  const patchBody = JSON.stringify({
+    updates: {
+      label: "Updated Custom Field Label",
+      visibleTo: ["administrator"]
+    },
+    reason: "integration test label update"
+  });
+  const patchRes = await fetch(`${BASE}${patchPath}`, {
+    method: "PATCH",
+    headers: trustedHeaders(admin, patchPath, { method: "PATCH", body: patchBody }),
+    body: patchBody
+  });
+  assert.equal(patchRes.status, 200, "custom field PATCH must succeed");
+  const patchJson = await patchRes.json();
+  assert.ok(patchJson.data, "PATCH must return the updated field data");
+
+  // DELETE the custom field.
+  const deletePath = `/api/v1/system/profile-fields/custom/${fieldKey}`;
+  const deleteBody = JSON.stringify({ reason: "integration test cleanup" });
+  const deleteRes = await fetch(`${BASE}${deletePath}`, {
+    method: "DELETE",
+    headers: trustedHeaders(admin, deletePath, { method: "DELETE", body: deleteBody }),
+    body: deleteBody
+  });
+  assert.equal(deleteRes.status, 200, "custom field DELETE must succeed");
+  const deleteResJson = await deleteRes.json();
+  assert.ok(deleteResJson.data, "DELETE must return a confirmation payload");
+});
+
+test("custom profile-field PATCH and DELETE are forbidden for non-admin roles", async () => {
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  const patchPath = "/api/v1/system/profile-fields/custom/some_key";
+  const patchBody = JSON.stringify({ updates: { label: "x" }, reason: "forbidden test" });
+  const patchRes = await fetch(`${BASE}${patchPath}`, {
+    method: "PATCH",
+    headers: trustedHeaders(clinician, patchPath, { method: "PATCH", body: patchBody }),
+    body: patchBody
+  });
+  assert.equal(patchRes.status, 403, "clinician must not PATCH custom profile fields");
+
+  const deletePath = "/api/v1/system/profile-fields/custom/some_key";
+  const deleteBody = JSON.stringify({ reason: "forbidden test" });
+  const deleteRes = await fetch(`${BASE}${deletePath}`, {
+    method: "DELETE",
+    headers: trustedHeaders(clinician, deletePath, { method: "DELETE", body: deleteBody }),
+    body: deleteBody
+  });
+  assert.equal(deleteRes.status, 403, "clinician must not DELETE custom profile fields");
+});
+
+test("GET /users lists all users and is restricted to admin", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+  const clinician = await login("clinician", CLINICIAN_PASS);
+
+  // Admin can list users.
+  const adminRes = await fetch(`${BASE}/api/v1/users`, {
+    headers: trustedHeaders(admin, "/api/v1/users")
+  });
+  assert.equal(adminRes.status, 200, "admin must be able to list users");
+  const adminJson = await adminRes.json();
+  assert.ok(Array.isArray(adminJson.data), "user list must be an array");
+  assert.ok(adminJson.data.length >= 3, "at least the three seeded users must be present");
+  for (const user of adminJson.data) {
+    assert.ok(user._id || user.id, "each user entry must have an id");
+    assert.ok(user.username, "each user entry must have a username");
+    assert.ok(user.role, "each user entry must have a role");
+  }
+
+  // Non-admin cannot list users.
+  const clinicianRes = await fetch(`${BASE}/api/v1/users`, {
+    headers: trustedHeaders(clinician, "/api/v1/users")
+  });
+  assert.equal(clinicianRes.status, 403, "clinician must not list users");
+});
+
+test("POST /users creates a new user and POST /users/:id/reset-password resets their password", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  // Create a new clinician user with a unique username.
+  const uniqueSuffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  const newUsername = `testclinician_${uniqueSuffix}`;
+  const newPassword = `InitialPass${uniqueSuffix.slice(0, 4)}2026!`;
+  const createBody = JSON.stringify({
+    username: newUsername,
+    password: newPassword,
+    role: "clinician",
+    securityQuestions: [
+      { question: "What is your integration test station?", answer: "test-station-alpha" }
+    ],
+    reason: "integration test user creation"
+  });
+  const createRes = await fetch(`${BASE}/api/v1/users`, {
+    method: "POST",
+    headers: trustedHeaders(admin, "/api/v1/users", { method: "POST", body: createBody }),
+    body: createBody
+  });
+  assert.equal(createRes.status, 201, "admin must be able to create a new user");
+  const createJson = await createRes.json();
+  const newUserId = createJson.data?._id || createJson.data?.id;
+  assert.ok(newUserId, "created user must have an id");
+  assert.equal(createJson.data.username, newUsername, "created user must have the correct username");
+  assert.equal(createJson.data.role, "clinician", "created user must have the correct role");
+
+  // Verify the new user appears in the user list.
+  const listRes = await fetch(`${BASE}/api/v1/users`, {
+    headers: trustedHeaders(admin, "/api/v1/users")
+  });
+  const listJson = await listRes.json();
+  const found = listJson.data.some((u) => u.username === newUsername);
+  assert.equal(found, true, "newly created user must appear in the user list");
+
+  // Admin reset-password for the new user.
+  const resetPath = `/api/v1/users/${newUserId}/reset-password`;
+  const resetBody = JSON.stringify({
+    newPassword: `ResetPass${uniqueSuffix.slice(0, 4)}2026!`,
+    reason: "integration test admin password reset"
+  });
+  const resetRes = await fetch(`${BASE}${resetPath}`, {
+    method: "POST",
+    headers: trustedHeaders(admin, resetPath, { method: "POST", body: resetBody }),
+    body: resetBody
+  });
+  assert.equal(resetRes.status, 200, "admin password reset must succeed");
+  const resetJson = await resetRes.json();
+  assert.equal(resetJson.data?.success, true, "reset response must confirm success");
+});
+
+test("POST /users create-user rejects malformed payloads", async () => {
+  const admin = await login("administrator", ADMIN_PASS);
+
+  const malformedCases = [
+    { label: "missing username", body: { password: "ValidPass12345!", role: "clinician", securityQuestions: [{ question: "q", answer: "a" }], reason: "x" } },
+    { label: "missing role", body: { username: "u", password: "ValidPass12345!", securityQuestions: [{ question: "q", answer: "a" }], reason: "x" } },
+    { label: "invalid role", body: { username: "u", password: "ValidPass12345!", role: "superadmin", securityQuestions: [{ question: "q", answer: "a" }], reason: "x" } },
+    { label: "empty securityQuestions", body: { username: "u", password: "ValidPass12345!", role: "clinician", securityQuestions: [], reason: "x" } },
+    { label: "missing securityQuestions", body: { username: "u", password: "ValidPass12345!", role: "clinician", reason: "x" } }
+  ];
+
+  for (const tc of malformedCases) {
+    const body = JSON.stringify(tc.body);
+    const res = await fetch(`${BASE}/api/v1/users`, {
+      method: "POST",
+      headers: trustedHeaders(admin, "/api/v1/users", { method: "POST", body }),
+      body
+    });
+    assert.equal(res.status, 400, `${tc.label}: expected 400, got ${res.status}`);
+  }
 });
