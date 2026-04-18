@@ -46,6 +46,6 @@ echo "[tests] Running API integration tests..."
 dc exec -T test-runner sh -lc "cd /workspace && BACKEND_BASE_URL=http://127.0.0.1:4000 SEED_ADMIN_PASSWORD='${SEED_ADMIN_PASSWORD}' SEED_CLINICIAN_PASSWORD='${SEED_CLINICIAN_PASSWORD}' SEED_CLIENT_PASSWORD='${SEED_CLIENT_PASSWORD}' node --test API_tests"
 
 echo "[tests] Running E2E tests (browser + HTTP)..."
-dc exec -T e2e-runner sh -lc "mkdir -p /workspace/e2e/node_modules && ln -sfn /usr/lib/node_modules/@playwright /workspace/e2e/node_modules/@playwright && cd /workspace && BACKEND_BASE_URL=http://127.0.0.1:4000 FRONTEND_BASE_URL=http://127.0.0.1:3000 SEED_ADMIN_PASSWORD='${SEED_ADMIN_PASSWORD}' SEED_CLINICIAN_PASSWORD='${SEED_CLINICIAN_PASSWORD}' SEED_CLIENT_PASSWORD='${SEED_CLIENT_PASSWORD}' node --test e2e/tests"
+dc exec -T e2e-runner sh -lc "mkdir -p /workspace/e2e/node_modules && ln -sfn \$(npm root -g)/@playwright /workspace/e2e/node_modules/@playwright && cd /workspace && BACKEND_BASE_URL=http://127.0.0.1:4000 FRONTEND_BASE_URL=http://127.0.0.1:3000 SEED_ADMIN_PASSWORD='${SEED_ADMIN_PASSWORD}' SEED_CLINICIAN_PASSWORD='${SEED_CLINICIAN_PASSWORD}' SEED_CLIENT_PASSWORD='${SEED_CLIENT_PASSWORD}' node --test e2e/tests"
 
 echo "[tests] All test suites passed."

@@ -119,7 +119,8 @@ services:
         condition: service_healthy
 
   e2e-runner:
-    image: repo-playwright_tests:latest
+    build:
+      context: ./e2e
     container_name: offline-e2e-runner
     network_mode: host
     working_dir: /workspace
