@@ -51,22 +51,23 @@ const BACKUP_THRESHOLD = RULES.REPEATED_BACKUP_EXECUTION.threshold;
 // added in ONE place to be monitored.
 function classifyRequest(method, path) {
   if (method === "GET") {
-    if (
-      path.startsWith("/api/v1/mindtrack/clients") ||
-      path.startsWith("/api/v1/mindtrack/self-context") ||
-      path.includes("/timeline")
-    ) {
-      return ACTIVITY_KINDS.RECORD_LOOKUP;
-    }
     // Reads of attachment binaries are treated as exports — they are
     // the canonical mechanism by which a user can pull PHI off the
-    // system in bulk.
+    // system in bulk. Must be checked before the general clients check
+    // because attachment paths may start with /mindtrack/clients/...
     if (
       path.includes("/attachments/") ||
       path.startsWith("/api/v1/mindtrack/search") ||
       path.startsWith("/api/v1/system/backup-files")
     ) {
       return ACTIVITY_KINDS.EXPORT_ATTEMPT;
+    }
+    if (
+      path.startsWith("/api/v1/mindtrack/clients") ||
+      path.startsWith("/api/v1/mindtrack/self-context") ||
+      path.includes("/timeline")
+    ) {
+      return ACTIVITY_KINDS.RECORD_LOOKUP;
     }
   }
   if (method === "POST") {
